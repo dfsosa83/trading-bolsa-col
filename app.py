@@ -70,8 +70,8 @@ def _load(url: str, report_date: str):
         "cv_tasa_max":    "Tasa Máx",
         "cv_tasa_cierre": "Tasa Cierre",
     }).reset_index(drop=True)
-    bond_display["Monto Total"] = bond_display["Monto Total"].round().astype("Int64")
-    bond_display["CV Monto"]    = bond_display["CV Monto"].round().astype("Int64")
+    bond_display["Monto Total"] = bond_display["Monto Total"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
+    bond_display["CV Monto"]    = bond_display["CV Monto"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
 
     # ── Buyers / Sellers ──────────────────────────────────────────────────────
     def _find_ext_debt_col(df: pd.DataFrame) -> str:
@@ -94,7 +94,7 @@ def _load(url: str, report_date: str):
             .sort_values(col_label, ascending=False)
             .reset_index(drop=True)
         )
-        out[col_label] = out[col_label].round().astype("Int64")
+        out[col_label] = out[col_label].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
         return out
 
     buyers  = _side("buyers",  "Monto Comprado")
@@ -178,8 +178,8 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
-        "Monto Total":    st.column_config.NumberColumn("Monto Total"),
-        "CV Monto":       st.column_config.NumberColumn("CV Monto"),
+        "Monto Total":    st.column_config.TextColumn("Monto Total"),
+        "CV Monto":       st.column_config.TextColumn("CV Monto"),
         "# Oper.":        st.column_config.NumberColumn("# Oper.",      format="%d"),
         "Tasa Mín":       st.column_config.NumberColumn("Tasa Mín",     format="%.4f"),
         "Tasa Máx":       st.column_config.NumberColumn("Tasa Máx",     format="%.4f"),
@@ -206,7 +206,7 @@ def _render_side(col, df: pd.DataFrame, monto_col: str, title: str):
             use_container_width=True,
             hide_index=True,
             column_config={
-                monto_col: st.column_config.NumberColumn(monto_col),
+                monto_col: st.column_config.TextColumn(monto_col),
             },
         )
 
