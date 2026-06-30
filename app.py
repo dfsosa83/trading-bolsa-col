@@ -21,6 +21,7 @@ from reports.generate_report import generate_to_bytes
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 _EXT_DEBT_INSTR = "PUBLIC EXTERNAL DEBT BONDS DOLLAR DENOMINATED"
+_HISTORY_DIR    = Path(__file__).resolve().parent / "data" / "history"
 
 st.set_page_config(
     page_title="BVC · Bonos Ext. USD",
@@ -36,12 +37,8 @@ def _get_reports() -> list[dict]:
     return fetch_report_list()
 
 
-@st.cache_data(show_spinner=False)
-def _load(url: str, report_date: str):
-    """Download xlsx for the given report URL, parse it, and build all dashboard data.
-    Result is cached indefinitely per (url, report_date) pair."""
-    xlsx_bytes = download_xlsx_bytes(url)
-
+def _parse(xlsx_bytes: bytes, report_date: str):
+    """Parse xlsx bytes into all dashboard data. Shared by both cached loaders."""
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
     ms_rows  = list(wb["RF-Mercado Secundario"].iter_rows(values_only=True))
     pti_rows = list(wb["RF-PorTipoInver"].iter_rows(values_only=True))
@@ -101,47 +98,79 @@ def _load(url: str, report_date: str):
     sellers = _side("sellers", "Monto Vendido")
     total   = df_bonds["total_monto"].sum()
 
-    # ── Excel report (in memory) ──────────────────────────────────────────────
     report_bytes = generate_to_bytes(xlsx_bytes, report_date).getvalue()
-
     return bond_display, buyers, sellers, total, report_bytes
 
 
-# ── Fetch report list from BVC API ────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def _load_from_file(xlsx_path: str, report_date: str):
+    """Load dashboard data from a saved history file (no network call)."""
+    return _parse(Path(xlsx_path).read_bytes(), report_date)
+
+
+@st.cache_data(show_spinner=False)
+def _load(url: str, report_date: str):
+    """Download xlsx for the given report URL, parse it, and build all dashboard data."""
+    return _parse(download_xlsx_bytes(url), report_date)
+
+
+
+# ── Build date catalogue: history files + live API ────────────────────────────
+# History files saved by GitHub Actions (data/history/*.xlsx)
+def _date_from_xlsx(p: Path) -> str:
+    parts = p.stem.split("_")
+    try:
+        return f"{parts[1]}-{parts[2]}-{parts[3]}"
+    except IndexError:
+        return p.stem
+
+history_files = {
+    _date_from_xlsx(p): str(p)
+    for p in sorted(_HISTORY_DIR.glob("BoletinDiario_*.xlsx"))
+    if len(p.stem.split("_")) >= 4
+}
+
+# Live API dates (re-checked every hour)
 with st.spinner("Consultando BVC..."):
     try:
-        reports = _get_reports()
+        reports    = _get_reports()
+        api_map    = {r["date"]: r["attached"]["url"] for r in reports}
     except Exception as e:
-        st.error(f"No se pudo conectar con la API de BVC: {e}")
-        st.stop()
+        st.warning(f"No se pudo conectar con la API de BVC: {e}")
+        api_map = {}
 
-if not reports:
-    st.warning("La API de BVC no devolvió informes disponibles.")
+# Merge: history takes priority; API fills in recent dates not yet saved
+all_dates   = sorted(set(history_files) | set(api_map), reverse=True)
+today       = date.today().isoformat()
+
+if not all_dates:
+    st.error("No hay datos disponibles. Revisa la conexión o el repositorio.")
     st.stop()
 
-report_map     = {r["date"]: r["attached"]["url"] for r in reports}
-available_dates = sorted(report_map.keys(), reverse=True)
-today           = date.today().isoformat()
-
 # ── Sidebar ────────────────────────────────────────────────────────────────────
-chosen_date = st.sidebar.selectbox("📅 Fecha del informe", available_dates)
+chosen_date = st.sidebar.selectbox("📅 Fecha del informe", all_dates)
 
-if today not in available_dates:
+if today not in all_dates:
     st.sidebar.info(
         f"ℹ️ El boletín de hoy ({today}) aún no está disponible.  \n"
         "Mostrando el más reciente."
     )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Fuente**")
+st.sidebar.markdown(f"**{len(all_dates)} fechas disponibles**")
 st.sidebar.markdown("BVC · RF-Mercado Secundario  \nRF-PorTipoInver")
 
 # ── Load & parse ───────────────────────────────────────────────────────────────
-with st.spinner("Descargando y procesando datos..."):
+with st.spinner("Cargando datos..."):
     try:
-        bond_df, buyers_df, sellers_df, grand_total, report_bytes = _load(
-            report_map[chosen_date], chosen_date
-        )
+        if chosen_date in history_files:
+            bond_df, buyers_df, sellers_df, grand_total, report_bytes = _load_from_file(
+                history_files[chosen_date], chosen_date
+            )
+        else:
+            bond_df, buyers_df, sellers_df, grand_total, report_bytes = _load(
+                api_map[chosen_date], chosen_date
+            )
     except Exception as e:
         st.error(f"Error procesando el informe: {e}")
         st.stop()

@@ -1,0 +1,33 @@
+name: Download BVC Daily Report
+
+on:
+  schedule:
+    - cron: "15 13 * * 1-5"   # 8:15am Colombia (UTC-5), Mon–Fri only
+  workflow_dispatch:            # allow manual trigger from GitHub UI
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Download latest BVC xlsx
+        run: python scripts/download_history.py
+
+      - name: Commit new file (if any)
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/history/
+          git diff --cached --quiet || git commit -m "data: BVC daily report $(date +'%Y-%m-%d')"
+          git push
