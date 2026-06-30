@@ -79,10 +79,12 @@ _SLOT = [
 ]
 
 # ── Section boundaries (1-indexed row numbers) ─────────────────────────────────
-_SEC_PUB_TRANS_FIRST_DATA = 17    # first bond data row
-_SEC_PUB_TRANS_TOTAL      = 107   # "Total" row — excluded from data
+# These are kept as fallback documentation only — parse() detects boundaries
+# dynamically by locating "Total" marker rows in column C.
+_SEC_PUB_TRANS_FIRST_DATA = 17    # typical first bond data row
+_SEC_PUB_TRANS_TOTAL      = 107   # typical "Total" row
 
-_SEC_PUB_REG_FIRST_DATA   = 114
+_SEC_PUB_REG_FIRST_DATA   = 114   # typical first bond data row
 _SEC_PUB_REG_TOTAL        = 266
 
 
@@ -118,16 +120,27 @@ def parse(ws_rows: list[tuple]) -> dict[str, pd.DataFrame]:
     Returns
     -------
     dict with keys 'pub_transaccional' and 'pub_registro'.
+
+    Section boundaries are detected dynamically by locating rows where
+    column C == 'Total', so the parser works even when the number of
+    traded bonds differs between dates (shifting row positions).
+
+    The sheet has three sections, each ending with a 'Total' row:
+      totals[0] → Privado Transaccional
+      totals[1] → Público Transaccional  (→ pub_transaccional)
+      totals[2] → Público Registro       (→ pub_registro)
     """
+    totals = [
+        i for i, row in enumerate(ws_rows)
+        if len(row) > _COL_NEMO and row[_COL_NEMO] == "Total"
+    ]
+    if len(totals) < 3:
+        raise ValueError(
+            f"Expected ≥3 'Total' rows in RF-Mercado Secundario, found {len(totals)}"
+        )
+
+    # _to_df(rows, first, last_excl) uses 1-indexed boundaries
     return {
-        "pub_transaccional": _to_df(
-            ws_rows,
-            _SEC_PUB_TRANS_FIRST_DATA,
-            _SEC_PUB_TRANS_TOTAL,
-        ),
-        "pub_registro": _to_df(
-            ws_rows,
-            _SEC_PUB_REG_FIRST_DATA,
-            _SEC_PUB_REG_TOTAL,
-        ),
+        "pub_transaccional": _to_df(ws_rows, totals[0] + 2, totals[1] + 1),
+        "pub_registro":      _to_df(ws_rows, totals[1] + 2, totals[2] + 1),
     }
