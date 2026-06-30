@@ -1,0 +1,14 @@
+# Downloaded data — not needed in repo (app fetches live from BVC API)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
