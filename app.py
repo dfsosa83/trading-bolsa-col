@@ -94,7 +94,7 @@ def _load(url: str, report_date: str):
             .sort_values(col_label, ascending=False)
             .reset_index(drop=True)
         )
-        out[col_label] = out[col_label].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
+        out[col_label] = out[col_label].round().astype("Int64")
         return out
 
     buyers  = _side("buyers",  "Monto Comprado")
@@ -201,15 +201,16 @@ def _render_side(col, df: pd.DataFrame, monto_col: str, title: str):
         active = df[df[monto_col] > 0]
         zero   = df[df[monto_col] == 0]
 
+        display = active[[monto_col, "Sector"]].copy()
+        display[monto_col] = display[monto_col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
         st.dataframe(
-            active[[monto_col, "Sector"]],
+            display,
             use_container_width=True,
             hide_index=True,
             column_config={
                 monto_col: st.column_config.TextColumn(monto_col),
             },
         )
-
         st.caption(
             f"**Total: ${active[monto_col].sum():,.0f} M** · "
             f"{len(active)} sector(es) activo(s) · "
