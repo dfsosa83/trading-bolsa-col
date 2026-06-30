@@ -1,5 +1,9 @@
-# Downloaded data — not needed in repo (app fetches live from BVC API)
-data/
+# Local cache — not needed in repo (app fetches live from BVC API)
+data/daily_data/
+data/reports/
+
+# History xlsx files ARE committed (data/history/ is tracked)
+
 
 # Python
 __pycache__/
