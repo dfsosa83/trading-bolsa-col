@@ -54,21 +54,19 @@ def _parse(xlsx_bytes: bytes, report_date: str):
     df_bonds["total_monto"] = df_bonds["cv_monto"].fillna(0) + df_bonds["sim_monto"].fillna(0)
 
     bond_display = df_bonds[[
-        "total_monto", "nemotecnico", "fec_vcto",
-        "cv_monto", "cv_num_opes",
+        "nemotecnico", "cv_monto", "fec_vcto",
+        "cv_num_opes",
         "cv_tasa_min", "cv_tasa_max", "cv_tasa_cierre",
     ]].rename(columns={
-        "total_monto":    "Monto Total",
         "nemotecnico":    "Nemotécnico",
-        "fec_vcto":       "Vencimiento",
         "cv_monto":       "CV Monto",
+        "fec_vcto":       "Vencimiento",
         "cv_num_opes":    "# Oper.",
         "cv_tasa_min":    "Tasa Mín",
         "cv_tasa_max":    "Tasa Máx",
         "cv_tasa_cierre": "Tasa Cierre",
     }).reset_index(drop=True)
-    bond_display["Monto Total"] = bond_display["Monto Total"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
-    bond_display["CV Monto"]    = bond_display["CV Monto"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
+    bond_display["CV Monto"] = bond_display["CV Monto"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
 
     # ── Buyers / Sellers ──────────────────────────────────────────────────────
     def _find_ext_debt_col(df: pd.DataFrame) -> str:
@@ -207,7 +205,6 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
-        "Monto Total":    st.column_config.TextColumn("Monto Total"),
         "CV Monto":       st.column_config.TextColumn("CV Monto"),
         "# Oper.":        st.column_config.NumberColumn("# Oper.",      format="%d"),
         "Tasa Mín":       st.column_config.NumberColumn("Tasa Mín",     format="%.4f"),
