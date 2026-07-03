@@ -202,14 +202,17 @@ def _build_ext_bonds_usd_sheet(
     next_row = _write_df(ws, bond_totals, title="Totales Bonos", start_row=next_row)
 
     # ── Section 2: Compradores (Buyers) — all sectors ────────────────────
-    buyers = (
-        pti_data["buyers"][["sector", _EXT_DEBT_INSTR]]
-        .rename(columns={"sector": "Sector", _EXT_DEBT_INSTR: "Monto Comprado"})
-        .sort_values("Monto Comprado", ascending=False)
-        .reset_index(drop=True)
-    )
-    # Monto first, then Sector
-    buyers = buyers[["Monto Comprado", "Sector"]]
+    buyers_df = pti_data["buyers"]
+    if _EXT_DEBT_INSTR in buyers_df.columns:
+        buyers = (
+            buyers_df[["sector", _EXT_DEBT_INSTR]]
+            .rename(columns={"sector": "Sector", _EXT_DEBT_INSTR: "Monto Comprado"})
+            .sort_values("Monto Comprado", ascending=False)
+            .reset_index(drop=True)
+        )
+        buyers = buyers[["Monto Comprado", "Sector"]]
+    else:
+        buyers = pd.DataFrame([{"Monto Comprado": 0.0, "Sector": "(sin operaciones)"}])
     buyers_total = pd.DataFrame([{"Monto Comprado": buyers["Monto Comprado"].sum(), "Sector": "TOTAL"}])
     buyers_display = pd.concat([buyers, buyers_total], ignore_index=True)
     next_row = _write_df(
@@ -219,14 +222,17 @@ def _build_ext_bonds_usd_sheet(
     )
 
     # ── Section 3: Vendedores (Sellers) — all sectors ────────────────────
-    sellers = (
-        pti_data["sellers"][["sector", _EXT_DEBT_INSTR]]
-        .rename(columns={"sector": "Sector", _EXT_DEBT_INSTR: "Monto Vendido"})
-        .sort_values("Monto Vendido", ascending=False)
-        .reset_index(drop=True)
-    )
-    # Monto first, then Sector
-    sellers = sellers[["Monto Vendido", "Sector"]]
+    sellers_df = pti_data["sellers"]
+    if _EXT_DEBT_INSTR in sellers_df.columns:
+        sellers = (
+            sellers_df[["sector", _EXT_DEBT_INSTR]]
+            .rename(columns={"sector": "Sector", _EXT_DEBT_INSTR: "Monto Vendido"})
+            .sort_values("Monto Vendido", ascending=False)
+            .reset_index(drop=True)
+        )
+        sellers = sellers[["Monto Vendido", "Sector"]]
+    else:
+        sellers = pd.DataFrame([{"Monto Vendido": 0.0, "Sector": "(sin operaciones)"}])
     sellers_total = pd.DataFrame([{"Monto Vendido": sellers["Monto Vendido"].sum(), "Sector": "TOTAL"}])
     sellers_display = pd.concat([sellers, sellers_total], ignore_index=True)
     _write_df(
