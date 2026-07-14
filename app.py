@@ -12,6 +12,7 @@ from pathlib import Path
 import altair as alt
 import openpyxl
 import pandas as pd
+import requests
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -36,6 +37,30 @@ st.set_page_config(
 def _get_reports() -> list[dict]:
     """Fetch available daily reports from BVC API. Re-checked every hour."""
     return fetch_report_list()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_trm() -> dict:
+    """
+    Fetch the current TRM (Tasa Representativa del Mercado) from the
+    Superintendencia Financiera via datos.gov.co (no API key required).
+    Returns dict with 'valor' (float COP/USD) and 'vigencia' (str date).
+    Falls back to a safe default if the request fails.
+    """
+    try:
+        resp = requests.get(
+            "https://www.datos.gov.co/resource/32sa-8pi3.json"
+            "?$limit=1&$order=vigenciadesde+DESC",
+            timeout=5,
+        )
+        resp.raise_for_status()
+        row = resp.json()[0]
+        return {
+            "valor":    float(row["valor"]),
+            "vigencia": row["vigenciadesde"][:10],
+        }
+    except Exception:
+        return {"valor": 4_000.0, "vigencia": "N/D"}
 
 
 def _parse(xlsx_bytes: bytes, report_date: str):
@@ -250,6 +275,17 @@ st.sidebar.markdown("---")
 st.sidebar.markdown(f"**{len(all_dates)} fechas disponibles**")
 st.sidebar.markdown("BVC · RF-Mercado Secundario  \nRF-PorTipoInver")
 
+# ── TRM ────────────────────────────────────────────────────────────────────────
+trm_data = _get_trm()
+trm      = trm_data["valor"]
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    f"**TRM** `{trm:,.2f}` COP/USD  \n"
+    f"<small>Vigencia: {trm_data['vigencia']}  \n"
+    f"Fuente: Superfinanciera · datos.gov.co</small>",
+    unsafe_allow_html=True,
+)
+
 # ── Load & parse ───────────────────────────────────────────────────────────────
 with st.spinner("Cargando datos..."):
     try:
@@ -285,7 +321,9 @@ if grand_total == 0:
 
 col_metric, col_download = st.columns([3, 1])
 with col_metric:
-    st.metric(label="Monto Total Negociado", value=f"${grand_total:,.0f} M")
+    total_usd = grand_total / trm
+    st.metric(label="Monto Total Negociado (COP)", value=f"${grand_total:,.0f} M")
+    st.caption(f"≈ USD {total_usd:,.2f} M · TRM {trm:,.2f}")
 with col_download:
     st.download_button(
         label="⬇️ Descargar Informe Excel",
@@ -306,19 +344,29 @@ with tab_daily:
     st.subheader("Bonos BGLT")
     st.caption(
         "Detalle por nemotécnico de las operaciones de Compra-Venta registradas en el día. "
-        "Montos en millones de COP · Tasas en % efectivo anual."
+        "Montos en millones de COP · Equivalente USD calculado con la TRM del día · Tasas en % efectivo anual."
     )
+
+    # Add USD equivalent column using current TRM
+    bond_display = bond_df.copy()
+    cop_numeric  = bond_display["CV Monto"].str.replace(",", "", regex=False).apply(pd.to_numeric, errors="coerce")
+    usd_col_pos  = bond_display.columns.get_loc("CV Monto") + 1
+    bond_display.insert(usd_col_pos, "Monto USD (M)",
+        (cop_numeric / trm).apply(lambda x: f"{x:,.2f}" if pd.notna(x) else "")
+    )
+
     st.dataframe(
-        bond_df,
+        bond_display,
         use_container_width=True,
         hide_index=True,
         column_config={
-            "CV Monto":    st.column_config.TextColumn("CV Monto"),
-            "# Oper.":     st.column_config.NumberColumn("# Oper.",     format="%d"),
-            "Tasa Mín":    st.column_config.NumberColumn("Tasa Mín",    format="%.4f"),
-            "Tasa Máx":    st.column_config.NumberColumn("Tasa Máx",    format="%.4f"),
-            "Tasa Cierre": st.column_config.NumberColumn("Tasa Cierre", format="%.4f"),
-            "Vencimiento": st.column_config.TextColumn("Vencimiento"),
+            "CV Monto":      st.column_config.TextColumn("CV Monto (M COP)"),
+            "Monto USD (M)": st.column_config.TextColumn("Monto USD (M)"),
+            "# Oper.":       st.column_config.NumberColumn("# Oper.",     format="%d"),
+            "Tasa Mín":      st.column_config.NumberColumn("Tasa Mín",    format="%.4f"),
+            "Tasa Máx":      st.column_config.NumberColumn("Tasa Máx",    format="%.4f"),
+            "Tasa Cierre":   st.column_config.NumberColumn("Tasa Cierre", format="%.4f"),
+            "Vencimiento":   st.column_config.TextColumn("Vencimiento"),
         },
     )
 
