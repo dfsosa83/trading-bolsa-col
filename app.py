@@ -219,6 +219,13 @@ with st.spinner("Cargando datos..."):
 # ── Header ─────────────────────────────────────────────────────────────────────
 st.title("📊 Bonos Deuda Pública Externa USD")
 st.caption(f"Informe diario · {chosen_date} · Sistema de Registro (OTC)")
+st.info(
+    "Este dashboard muestra las negociaciones OTC de Bonos de Deuda Pública Externa "
+    "denominados en dólares (BGLT) registradas en la BVC. "
+    "**Vista Diaria** detalla la sesión seleccionada; "
+    "**Posiciones Históricas** analiza tendencias y patrones entre sesiones.",
+    icon="ℹ️",
+)
 
 if grand_total == 0:
     st.warning(
@@ -246,6 +253,10 @@ with tab_daily:
 
     # ── Bond detail ──────────────────────────────────────────────────────────
     st.subheader("Bonos BGLT")
+    st.caption(
+        "Detalle por nemotécnico de las operaciones de Compra-Venta registradas en el día. "
+        "Montos en millones de COP · Tasas en % efectivo anual."
+    )
     st.dataframe(
         bond_df,
         use_container_width=True,
@@ -264,6 +275,12 @@ with tab_daily:
 
     # ── Buyers / Sellers ─────────────────────────────────────────────────────
     st.subheader("Distribución por Tipo de Inversionista")
+    st.caption(
+        "Muestra qué sectores compraron y vendieron BGLT en la sesión. "
+        "Un sector con alto monto comprado y bajo vendido es **demandante neto** de papel; "
+        "el caso inverso indica **distribución**. "
+        "Los sectores sin operaciones no participaron en BGLT ese día."
+    )
     col_b, col_s = st.columns(2)
 
     def _render_side(col, df: pd.DataFrame, monto_col: str, title: str):
@@ -332,6 +349,12 @@ with tab_hist:
 
         # ── Line chart: net position per day per sector ───────────────────
         st.markdown("##### Posición Neta Diaria por Sector")
+        st.caption(
+            "Cada línea es **comprado − vendido** por sector en cada sesión. "
+            "Valores **sobre cero** → comprador neto ese día; "
+            "**bajo cero** → vendedor neto. "
+            "Hover sobre un punto para ver el detalle de compras y ventas."
+        )
 
         zero_rule = (
             alt.Chart(pd.DataFrame({"y": [0]}))
@@ -364,7 +387,12 @@ with tab_hist:
 
         # ── Heatmap: sector × date ────────────────────────────────────────
         st.markdown("##### Mapa de Calor — Posición Neta (M COP)")
-        st.caption("🟢 Verde = comprador neto · 🔴 Rojo = vendedor neto")
+        st.caption(
+            "Tabla cruzada sector × fecha. "
+            "🟢 Verde intenso = gran comprador neto · 🔴 Rojo intenso = gran vendedor neto · Blanco/amarillo = neutral. "
+            "Útil para detectar **patrones recurrentes**: p.ej. si un sector aparece siempre en rojo, "
+            "es un distribuidor estructural de BGLT."
+        )
 
         pivot = h.pivot_table(
             index="sector_s", columns="date", values="net",
@@ -384,6 +412,11 @@ with tab_hist:
 
         # ── Cumulative net bar ────────────────────────────────────────────
         st.markdown("##### Posición Neta Acumulada en el Período")
+        st.caption(
+            "Suma de posiciones netas diarias en todas las sesiones analizadas. "
+            "Identifica los **compradores y vendedores estructurales** de BGLT: "
+            "barras verdes = acumulación neta de papel; barras rojas = distribución neta."
+        )
 
         cum_df = (
             h.groupby("sector_s")["net"]
