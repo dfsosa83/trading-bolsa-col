@@ -9,6 +9,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import altair as alt
 import openpyxl
 import pandas as pd
 import streamlit as st
@@ -112,6 +113,48 @@ def _load(url: str, report_date: str):
     return _parse(download_xlsx_bytes(url), report_date)
 
 
+@st.cache_data(show_spinner=False)
+def _build_history_df(_files_key: tuple) -> pd.DataFrame:
+    """
+    Parse all history xlsx files and return a long-format DataFrame:
+    columns = date, sector, comprado, vendido, net
+    Cache key includes file paths so new files bust the cache automatically.
+    """
+    records = []
+    for date_str, path in sorted(history_files.items()):
+        try:
+            wb       = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            pti_rows = list(wb["RF-PorTipoInver"].iter_rows(values_only=True))
+            wb.close()
+            pti = rf_por_tipo_inver.parse(pti_rows)
+        except Exception:
+            continue
+
+        def _ext_col(df: pd.DataFrame) -> "str | None":
+            if _EXT_DEBT_INSTR in df.columns:
+                return _EXT_DEBT_INSTR
+            for c in df.columns:
+                if "external" in c.lower() and "dollar" in c.lower():
+                    return c
+            return None
+
+        bc = _ext_col(pti["buyers"])
+        sc = _ext_col(pti["sellers"])
+        if bc is None or sc is None:
+            continue
+
+        b = pti["buyers"][["sector", bc]].rename(columns={bc: "comprado"})
+        s = pti["sellers"][["sector", sc]].rename(columns={sc: "vendido"})
+        m = pd.merge(b, s, on="sector", how="outer").fillna(0)
+        m["net"]  = m["comprado"] - m["vendido"]
+        m["date"] = date_str
+        records.append(m)
+
+    if not records:
+        return pd.DataFrame(columns=["date", "sector", "comprado", "vendido", "net"])
+    return pd.concat(records, ignore_index=True)
+
+
 
 # ── Build date catalogue: history files + live API ────────────────────────────
 # History files saved by GitHub Actions (data/history/*.xlsx)
@@ -195,57 +238,185 @@ with col_download:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-st.markdown("---")
+# ── Tabs ─────────────────────────────────────────────────────────────────────
+tab_daily, tab_hist = st.tabs(["📅 Vista Diaria", "📈 Posiciones Históricas"])
 
-# ── Section 1: Bond detail ─────────────────────────────────────────────────────
-st.subheader("Bonos BGLT")
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_daily:
 
-st.dataframe(
-    bond_df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "CV Monto":       st.column_config.TextColumn("CV Monto"),
-        "# Oper.":        st.column_config.NumberColumn("# Oper.",      format="%d"),
-        "Tasa Mín":       st.column_config.NumberColumn("Tasa Mín",     format="%.4f"),
-        "Tasa Máx":       st.column_config.NumberColumn("Tasa Máx",     format="%.4f"),
-        "Tasa Cierre":    st.column_config.NumberColumn("Tasa Cierre",  format="%.4f"),
-        "Vencimiento":    st.column_config.TextColumn("Vencimiento"),
-    },
-)
+    # ── Bond detail ──────────────────────────────────────────────────────────
+    st.subheader("Bonos BGLT")
+    st.dataframe(
+        bond_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "CV Monto":    st.column_config.TextColumn("CV Monto"),
+            "# Oper.":     st.column_config.NumberColumn("# Oper.",     format="%d"),
+            "Tasa Mín":    st.column_config.NumberColumn("Tasa Mín",    format="%.4f"),
+            "Tasa Máx":    st.column_config.NumberColumn("Tasa Máx",    format="%.4f"),
+            "Tasa Cierre": st.column_config.NumberColumn("Tasa Cierre", format="%.4f"),
+            "Vencimiento": st.column_config.TextColumn("Vencimiento"),
+        },
+    )
 
-st.markdown("---")
+    st.markdown("---")
 
-# ── Section 2: Buyers / Sellers side by side ──────────────────────────────────
-st.subheader("Distribución por Tipo de Inversionista")
+    # ── Buyers / Sellers ─────────────────────────────────────────────────────
+    st.subheader("Distribución por Tipo de Inversionista")
+    col_b, col_s = st.columns(2)
 
-col_b, col_s = st.columns(2)
+    def _render_side(col, df: pd.DataFrame, monto_col: str, title: str):
+        with col:
+            st.markdown(f"#### {title}")
+            active = df[df[monto_col] > 0]
+            zero   = df[df[monto_col] == 0]
+            display = active[[monto_col, "Sector"]].copy()
+            display[monto_col] = display[monto_col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
+            st.dataframe(
+                display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={monto_col: st.column_config.TextColumn(monto_col)},
+            )
+            st.caption(
+                f"**Total: ${active[monto_col].sum():,.0f} M** · "
+                f"{len(active)} sector(es) activo(s) · "
+                f"{len(zero)} sin operaciones"
+            )
+            if not zero.empty:
+                with st.expander(f"Sectores sin operaciones ({len(zero)})"):
+                    st.dataframe(zero[["Sector"]], use_container_width=True, hide_index=True)
 
-def _render_side(col, df: pd.DataFrame, monto_col: str, title: str):
-    with col:
-        st.markdown(f"#### {title}")
-        active = df[df[monto_col] > 0]
-        zero   = df[df[monto_col] == 0]
+    _render_side(col_b, buyers_df,  "Monto Comprado", "🟢 Compradores")
+    _render_side(col_s, sellers_df, "Monto Vendido",  "🔴 Vendedores")
 
-        display = active[[monto_col, "Sector"]].copy()
-        display[monto_col] = display[monto_col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
+
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_hist:
+    st.subheader("Posiciones Netas por Sector — Bonos Ext. USD")
+    st.caption(
+        "Positivo = comprador neto · Negativo = vendedor neto · "
+        "Solo sectores con actividad en al menos una sesión"
+    )
+
+    with st.spinner("Construyendo serie histórica..."):
+        hist_df = _build_history_df(tuple(sorted(history_files.items())))
+
+    if hist_df.empty:
+        st.info("No hay datos históricos disponibles aún.")
+    else:
+        # ── Prep ─────────────────────────────────────────────────────────
+        active_sectors = (
+            hist_df.groupby("sector")["net"]
+            .apply(lambda x: (x.abs() > 0).any())
+            .loc[lambda x: x]
+            .index.tolist()
+        )
+        h = hist_df[hist_df["sector"].isin(active_sectors)].copy()
+        h["date"]     = pd.to_datetime(h["date"])
+        h["sector_s"] = h["sector"].str.split("/").str[0].str.strip()
+
+        # ── KPIs ──────────────────────────────────────────────────────────
+        cum        = h.groupby("sector_s")["net"].sum().sort_values(ascending=False)
+        n_days     = int(h["date"].nunique())
+        top_buyer  = cum.index[0]  if len(cum) > 0 else "—"
+        top_seller = cum.index[-1] if len(cum) > 0 else "—"
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("📅 Fechas analizadas",    n_days)
+        k2.metric("🟢 Mayor comprador neto", top_buyer)
+        k3.metric("🔴 Mayor vendedor neto",  top_seller)
+
+        st.markdown("---")
+
+        # ── Line chart: net position per day per sector ───────────────────
+        st.markdown("##### Posición Neta Diaria por Sector")
+
+        zero_rule = (
+            alt.Chart(pd.DataFrame({"y": [0]}))
+            .mark_rule(color="#666", strokeDash=[4, 4])
+            .encode(y="y:Q")
+        )
+        line_chart = (
+            alt.Chart(h)
+            .mark_line(point=True, strokeWidth=2)
+            .encode(
+                x=alt.X("date:T", title="Fecha",
+                        axis=alt.Axis(format="%d %b", labelAngle=-30)),
+                y=alt.Y("net:Q",  title="Posición Neta (M COP)",
+                        axis=alt.Axis(format=",.0f")),
+                color=alt.Color("sector_s:N", title="Sector"),
+                tooltip=[
+                    alt.Tooltip("date:T",     title="Fecha",         format="%Y-%m-%d"),
+                    alt.Tooltip("sector_s:N", title="Sector"),
+                    alt.Tooltip("net:Q",      title="Pos. Neta",     format=",.0f"),
+                    alt.Tooltip("comprado:Q", title="Comprado",      format=",.0f"),
+                    alt.Tooltip("vendido:Q",  title="Vendido",       format=",.0f"),
+                ],
+            )
+            .properties(height=380)
+            .interactive()
+        )
+        st.altair_chart(zero_rule + line_chart, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Heatmap: sector × date ────────────────────────────────────────
+        st.markdown("##### Mapa de Calor — Posición Neta (M COP)")
+        st.caption("🟢 Verde = comprador neto · 🔴 Rojo = vendedor neto")
+
+        pivot = h.pivot_table(
+            index="sector_s", columns="date", values="net",
+            aggfunc="sum", fill_value=0,
+        )
+        pivot.columns = [d.strftime("%d/%m") for d in pivot.columns]
+        pivot.index.name = "Sector"
+        abs_max = float(pivot.abs().max().max()) or 1.0
         st.dataframe(
-            display,
+            pivot.style
+            .background_gradient(cmap="RdYlGn", axis=None, vmin=-abs_max, vmax=abs_max)
+            .format("{:,.0f}"),
             use_container_width=True,
-            hide_index=True,
-            column_config={
-                monto_col: st.column_config.TextColumn(monto_col),
-            },
-        )
-        st.caption(
-            f"**Total: ${active[monto_col].sum():,.0f} M** · "
-            f"{len(active)} sector(es) activo(s) · "
-            f"{len(zero)} sin operaciones"
         )
 
-        if not zero.empty:
-            with st.expander(f"Sectores sin operaciones ({len(zero)})"):
-                st.dataframe(zero[["Sector"]], use_container_width=True, hide_index=True)
+        st.markdown("---")
 
-_render_side(col_b, buyers_df,  "Monto Comprado", "🟢 Compradores")
-_render_side(col_s, sellers_df, "Monto Vendido",  "🔴 Vendedores")
+        # ── Cumulative net bar ────────────────────────────────────────────
+        st.markdown("##### Posición Neta Acumulada en el Período")
+
+        cum_df = (
+            h.groupby("sector_s")["net"]
+            .sum()
+            .reset_index()
+            .rename(columns={"sector_s": "Sector", "net": "Neto"})
+            .sort_values("Neto", ascending=False)
+        )
+        cum_df["Rol"] = cum_df["Neto"].apply(
+            lambda x: "Comprador" if x >= 0 else "Vendedor"
+        )
+
+        bar = (
+            alt.Chart(cum_df)
+            .mark_bar(cornerRadiusEnd=3)
+            .encode(
+                x=alt.X("Neto:Q", title="Posición Neta Acumulada (M COP)",
+                        axis=alt.Axis(format=",.0f")),
+                y=alt.Y("Sector:N", sort="-x", title=None),
+                color=alt.Color(
+                    "Rol:N",
+                    scale=alt.Scale(
+                        domain=["Comprador", "Vendedor"],
+                        range=["#2ecc71", "#e74c3c"],
+                    ),
+                    legend=None,
+                ),
+                tooltip=[
+                    alt.Tooltip("Sector:N"),
+                    alt.Tooltip("Neto:Q", title="Posición Neta", format=",.0f"),
+                    alt.Tooltip("Rol:N"),
+                ],
+            )
+            .properties(height=max(200, len(cum_df) * 45))
+        )
+        st.altair_chart(bar, use_container_width=True)
