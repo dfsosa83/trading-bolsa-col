@@ -638,6 +638,9 @@ with tab_yield:
         )
         latest["Última Sesión"] = latest["Última Sesión"].dt.strftime("%Y-%m-%d")
         latest["Vencimiento"]   = latest["Vencimiento"].dt.strftime("%Y-%m-%d")
+        latest["Monto (M COP)"] = latest["Monto (M COP)"].apply(
+            lambda x: f"{x:,.0f}" if pd.notna(x) else ""
+        )
 
         st.dataframe(
             latest[[
@@ -648,9 +651,9 @@ with tab_yield:
             hide_index=True,
             column_config={
                 "Años al Vto.": st.column_config.NumberColumn(format="%.1f"),
-                "Tasa Cierre":   st.column_config.NumberColumn(format="%.4f"),
+                "Tasa Cierre":  st.column_config.NumberColumn(format="%.4f"),
                 "Tasa Mín":     st.column_config.NumberColumn(format="%.4f"),
                 "Tasa Máx":     st.column_config.NumberColumn(format="%.4f"),
-                "Monto (M COP)": st.column_config.NumberColumn(format=",.0f"),
+                "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
             },
         )
