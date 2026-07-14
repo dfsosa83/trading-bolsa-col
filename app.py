@@ -114,6 +114,55 @@ def _load(url: str, report_date: str):
 
 
 @st.cache_data(show_spinner=False)
+def _build_yield_history_df(_files_key: tuple) -> pd.DataFrame:
+    """
+    Parse all history xlsx files and return BGLT bond rate data:
+    columns = date, nemotecnico, fec_vcto, years_to_maturity,
+              cv_tasa_cierre, cv_tasa_min, cv_tasa_max, cv_monto, cv_num_opes
+    Only rows where the bond actually traded (cv_tasa_cierre not null/zero).
+    """
+    records = []
+    for date_str, path in sorted(history_files.items()):
+        try:
+            wb      = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            ms_rows = list(wb["RF-Mercado Secundario"].iter_rows(values_only=True))
+            wb.close()
+            ms_data = rf_mercado_secundario.parse(ms_rows)
+        except Exception:
+            continue
+
+        df = ms_data["pub_registro"].copy()
+        mask = (
+            df["descripcion"].str.lower().str.contains("ext dolares", na=False)
+            & df["cv_tasa_cierre"].notna()
+            & (df["cv_tasa_cierre"] != 0)
+        )
+        df = df[mask].copy()
+        if df.empty:
+            continue
+
+        df["date"] = date_str
+        records.append(df[[
+            "date", "nemotecnico", "fec_vcto",
+            "cv_tasa_cierre", "cv_tasa_min", "cv_tasa_max",
+            "cv_monto", "cv_num_opes",
+        ]])
+
+    if not records:
+        return pd.DataFrame(columns=[
+            "date", "nemotecnico", "fec_vcto",
+            "cv_tasa_cierre", "cv_tasa_min", "cv_tasa_max",
+            "cv_monto", "cv_num_opes", "years_to_maturity",
+        ])
+
+    out = pd.concat(records, ignore_index=True)
+    out["date"]    = pd.to_datetime(out["date"])
+    out["fec_vcto"] = pd.to_datetime(out["fec_vcto"], errors="coerce")
+    out["years_to_maturity"] = (out["fec_vcto"] - out["date"]).dt.days / 365.25
+    return out
+
+
+@st.cache_data(show_spinner=False)
 def _build_history_df(_files_key: tuple) -> pd.DataFrame:
     """
     Parse all history xlsx files and return a long-format DataFrame:
@@ -246,7 +295,9 @@ with col_download:
     )
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
-tab_daily, tab_hist = st.tabs(["📅 Vista Diaria", "📈 Posiciones Históricas"])
+tab_daily, tab_hist, tab_yield = st.tabs(
+    ["📅 Vista Diaria", "📈 Posiciones Históricas", "📉 Curva de Tasas"]
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_daily:
@@ -453,3 +504,153 @@ with tab_hist:
             .properties(height=max(200, len(cum_df) * 45))
         )
         st.altair_chart(bar, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_yield:
+    st.subheader("Curva de Tasas — Bonos BGLT")
+    st.caption(
+        "Análisis de tasas de cierre (% e.a.) de los bonos de Deuda Pública Externa USD. "
+        "Usa la fecha del panel izquierdo para ver el snapshot de curva de ese día."
+    )
+
+    with st.spinner("Cargando datos de tasas..."):
+        yield_df = _build_yield_history_df(tuple(sorted(history_files.items())))
+
+    if yield_df.empty:
+        st.info("No hay datos de tasas disponibles aún.")
+    else:
+        # ── Chart 1: Yield Curve snapshot ──────────────────────────────────
+        snap = yield_df[yield_df["date"] == pd.to_datetime(chosen_date)]
+        if snap.empty:
+            # Fall back to the most recent available session
+            snap      = yield_df[yield_df["date"] == yield_df["date"].max()]
+            snap_date = yield_df["date"].max().strftime("%Y-%m-%d")
+            st.caption(f"⚠️ Sin datos para {chosen_date}. Mostrando la sesión más reciente: {snap_date}.")
+        else:
+            snap_date = chosen_date
+
+        st.markdown(f"##### 📈 Curva de Tasas al {snap_date}")
+        st.caption(
+            "Cada punto es un bono BGLT que negóció en esa sesión. "
+            "**Eje X** = años al vencimiento · **Eje Y** = tasa de cierre (% e.a.). "
+            "El tamaño del punto refleja el monto negociado. "
+            "La línea punteada conecta los puntos ordenados por plazo, aproximando la forma de la curva."
+        )
+
+        # Dashed line connecting dots ordered by maturity
+        curve_line = (
+            alt.Chart(snap.sort_values("years_to_maturity"))
+            .mark_line(strokeDash=[5, 3], color="#888", strokeWidth=1.5)
+            .encode(
+                x=alt.X("years_to_maturity:Q"),
+                y=alt.Y("cv_tasa_cierre:Q"),
+            )
+        )
+        # Dots sized by monto, colored by bond
+        dots = (
+            alt.Chart(snap)
+            .mark_circle(opacity=0.9)
+            .encode(
+                x=alt.X("years_to_maturity:Q", title="Años al Vencimiento",
+                        scale=alt.Scale(zero=False)),
+                y=alt.Y("cv_tasa_cierre:Q", title="Tasa de Cierre (% e.a.)",
+                        scale=alt.Scale(zero=False),
+                        axis=alt.Axis(format=".4f")),
+                size=alt.Size("cv_monto:Q", title="Monto (M COP)",
+                              scale=alt.Scale(range=[150, 900])),
+                color=alt.Color("nemotecnico:N", title="Bono"),
+                tooltip=[
+                    alt.Tooltip("nemotecnico:N",       title="Bono"),
+                    alt.Tooltip("years_to_maturity:Q", title="Años al Vto.", format=".1f"),
+                    alt.Tooltip("cv_tasa_cierre:Q",    title="Tasa Cierre",  format=".4f"),
+                    alt.Tooltip("cv_tasa_min:Q",       title="Tasa Mín",     format=".4f"),
+                    alt.Tooltip("cv_tasa_max:Q",       title="Tasa Máx",     format=".4f"),
+                    alt.Tooltip("cv_monto:Q",          title="Monto (M COP)",format=",.0f"),
+                    alt.Tooltip("cv_num_opes:Q",       title="# Oper."),
+                ],
+            )
+            .properties(height=360)
+            .interactive()
+        )
+        st.altair_chart(curve_line + dots, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Chart 2: Rate evolution per bond over time ───────────────────
+        st.markdown("##### 🗓️ Evolución de Tasas de Cierre por Bono")
+        st.caption(
+            "Cada línea es un bono BGLT. Solo se grafican días en que el bono negóció. "
+            "**Tasa al alza** = el bono se abarata (precio cae, rentabilidad sube). "
+            "**Tasa a la baja** = el bono se encarece (precio sube, rentabilidad cae)."
+        )
+
+        rate_evo = (
+            alt.Chart(yield_df)
+            .mark_line(point=True, strokeWidth=2)
+            .encode(
+                x=alt.X("date:T", title="Fecha",
+                        axis=alt.Axis(format="%d %b", labelAngle=-30)),
+                y=alt.Y("cv_tasa_cierre:Q", title="Tasa de Cierre (% e.a.)",
+                        scale=alt.Scale(zero=False),
+                        axis=alt.Axis(format=".4f")),
+                color=alt.Color("nemotecnico:N", title="Bono"),
+                tooltip=[
+                    alt.Tooltip("date:T",            title="Fecha",         format="%Y-%m-%d"),
+                    alt.Tooltip("nemotecnico:N",      title="Bono"),
+                    alt.Tooltip("cv_tasa_cierre:Q",   title="Tasa Cierre",   format=".4f"),
+                    alt.Tooltip("cv_tasa_min:Q",      title="Tasa Mín",      format=".4f"),
+                    alt.Tooltip("cv_tasa_max:Q",      title="Tasa Máx",      format=".4f"),
+                    alt.Tooltip("cv_monto:Q",         title="Monto (M COP)", format=",.0f"),
+                ],
+            )
+            .properties(height=360)
+            .interactive()
+        )
+        st.altair_chart(rate_evo, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Table: latest rate per bond ────────────────────────────────────
+        st.markdown("##### 📌 Últimas Tasas Registradas por Bono")
+        st.caption(
+            "La última tasa de cierre observada para cada BGLT, "
+            "ordenada de menor a mayor plazo. "
+            "Sirve como referencia rápida del nivel de tasas vigente."
+        )
+
+        latest = (
+            yield_df.sort_values("date")
+            .groupby("nemotecnico", as_index=False)
+            .last()
+            .sort_values("years_to_maturity")
+            .rename(columns={
+                "nemotecnico":       "Bono",
+                "date":              "Última Sesión",
+                "fec_vcto":          "Vencimiento",
+                "years_to_maturity": "Años al Vto.",
+                "cv_tasa_cierre":    "Tasa Cierre",
+                "cv_tasa_min":       "Tasa Mín",
+                "cv_tasa_max":       "Tasa Máx",
+                "cv_monto":          "Monto (M COP)",
+                "cv_num_opes":       "# Oper.",
+            })
+        )
+        latest["Última Sesión"] = latest["Última Sesión"].dt.strftime("%Y-%m-%d")
+        latest["Vencimiento"]   = latest["Vencimiento"].dt.strftime("%Y-%m-%d")
+
+        st.dataframe(
+            latest[[
+                "Bono", "Última Sesión", "Vencimiento", "Años al Vto.",
+                "Tasa Cierre", "Tasa Mín", "Tasa Máx", "Monto (M COP)", "# Oper.",
+            ]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Años al Vto.": st.column_config.NumberColumn(format="%.1f"),
+                "Tasa Cierre":   st.column_config.NumberColumn(format="%.4f"),
+                "Tasa Mín":     st.column_config.NumberColumn(format="%.4f"),
+                "Tasa Máx":     st.column_config.NumberColumn(format="%.4f"),
+                "Monto (M COP)": st.column_config.NumberColumn(format=",.0f"),
+            },
+        )
