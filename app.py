@@ -254,6 +254,112 @@ def _build_yield_history_df(_files_key: tuple) -> pd.DataFrame:
     return out
 
 
+def _flow_matrix(
+    buyers_df: pd.DataFrame, sellers_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Build a proportional buyer→seller flow matrix (M COP).
+
+    Model (Independence / Maximum-Entropy):
+      If sector A bought X% of the total and sector B sold Y% of the total,
+      the estimated flow A←B = X% × Y% × total_monto.
+
+    BVC constraint applied:
+      Extranjeros ↔ Extranjeros = 0.
+      Foreign-to-foreign operations bypass BVC local registration;
+      they never appear in the Boletin data, so this cell must be 0.
+      Extranjeros' sales are redistributed among LOCAL buyers only.
+
+    Parameters
+    ----------
+    buyers_df  : DataFrame with columns ['Sector', 'Monto Comprado']
+    sellers_df : DataFrame with columns ['Sector', 'Monto Vendido']
+
+    Returns
+    -------
+    DataFrame: rows = buyers, columns = sellers, values = estimated M COP.
+    """
+    buyers  = {r["Sector"]: float(r["Monto Comprado"]) for _, r in buyers_df.iterrows()}
+    sellers = {r["Sector"]: float(r["Monto Vendido"])  for _, r in sellers_df.iterrows()}
+
+    active_b = {k: v for k, v in buyers.items()  if v > 0}
+    active_s = {k: v for k, v in sellers.items() if v > 0}
+    T = sum(active_b.values())
+    if T == 0:
+        return pd.DataFrame()
+
+    # Standard proportional matrix: F[buyer][seller] = B_buyer × S_seller / T
+    df = pd.DataFrame(
+        {buyer: {seller: b_i * s_j / T
+                 for seller, s_j in active_s.items()}
+         for buyer, b_i in active_b.items()}
+    ).T.fillna(0)  # rows = buyers, columns = sellers
+
+    # Apply BVC constraint: Extranjeros (buyer) → Extranjeros (seller) = impossible
+    ext_b = next((k for k in active_b if "extran" in k.lower()), None)
+    ext_s = next((k for k in active_s if "extran" in k.lower()), None)
+    if ext_b and ext_s and ext_b in df.index and ext_s in df.columns:
+        df.loc[ext_b, ext_s] = 0
+        # Redistribute Extranjeros' sales proportionally among LOCAL buyers only
+        local_b_total = sum(v for k, v in active_b.items() if k != ext_b)
+        if local_b_total > 0:
+            for buyer, b_i in active_b.items():
+                if buyer != ext_b and buyer in df.index:
+                    df.loc[buyer, ext_s] = b_i * active_s[ext_s] / local_b_total
+
+    return df.round(1)
+
+
+@st.cache_data(show_spinner=False)
+def _build_cross_history(_files_key: tuple) -> pd.DataFrame:
+    """
+    Apply the flow matrix to every date in the history and return
+    all estimated flows in long format:
+      columns = date, buyer, seller, flujo (M COP)
+
+    Reuses _build_history_df() — no extra file reads needed.
+    The Extranjeros constraint is applied to every session.
+    """
+    hist = _build_history_df(_files_key)
+    if hist.empty:
+        return pd.DataFrame(columns=["date", "buyer", "seller", "flujo"])
+
+    records = []
+    for date, grp in hist.groupby("date"):
+        # Build active buyer/seller dicts for this session
+        active_b = (grp.set_index("sector")["comprado"]
+                    .pipe(lambda s: s[s > 0]).to_dict())
+        active_s = (grp.set_index("sector")["vendido"]
+                    .pipe(lambda s: s[s > 0]).to_dict())
+        T = sum(active_b.values())
+        if T == 0:
+            continue
+
+        ext_b = next((k for k in active_b if "extran" in k.lower()), None)
+        ext_s = next((k for k in active_s if "extran" in k.lower()), None)
+        # Local-only total used when distributing ext_s sales
+        local_b_total = sum(v for k, v in active_b.items() if k != ext_b) if ext_b else T
+
+        for buyer, b_i in active_b.items():
+            for seller, s_j in active_s.items():
+                # BVC constraint: foreign buyer → foreign seller = 0
+                if ext_b and ext_s and buyer == ext_b and seller == ext_s:
+                    flujo = 0
+                # Extranjeros as seller: only local buyers can appear
+                elif ext_s and seller == ext_s and buyer != ext_b:
+                    flujo = (b_i * s_j / local_b_total) if local_b_total > 0 else 0
+                else:
+                    flujo = b_i * s_j / T
+
+                if flujo > 0:
+                    records.append({"date": date, "buyer": buyer,
+                                    "seller": seller, "flujo": round(flujo, 1)})
+
+    return pd.DataFrame(records) if records else pd.DataFrame(
+        columns=["date", "buyer", "seller", "flujo"]
+    )
+
+
 @st.cache_data(show_spinner=False)
 def _build_history_df(_files_key: tuple) -> pd.DataFrame:
     """
@@ -400,8 +506,9 @@ with col_download:
     )
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
-tab_daily, tab_hist, tab_yield, tab_pension = st.tabs(
-    ["📅 Vista Diaria", "📈 Posiciones Históricas", "📉 Curva de Tasas", "🏦 Fondos de Pensiones"]
+tab_daily, tab_hist, tab_yield, tab_pension, tab_cross = st.tabs(
+    ["📅 Vista Diaria", "📈 Posiciones Históricas", "📉 Curva de Tasas",
+     "🏦 Fondos de Pensiones", "🔀 Triangulación"]
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -962,4 +1069,204 @@ with tab_pension:
             "⚠️ **Protección** y **Skandia** no aparecen en esta tabla porque no reportan "
             "tenencias de BGLT en el Formato 351 de la Superfinanciera. "
             "Pueden tener posiciones en otros instrumentos de deuda pública."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_cross:
+    st.subheader("🔀 Triangulación — Cruces Probables entre Participantes")
+    st.info(
+        "**¿Qué es la triangulación?**  \n"
+        "El boletín BVC sólo muestra el *total* que cada sector compró y vendió, "
+        "no a quién le compró o vendió. Esta pestaña estima los cruces más probables "
+        "usando un **modelo proporcional**: si Pensiones compró el 45% del total y "
+        "Extranjeros vendió el 64%, el flujo estimado Pensiones←Extranjeros ≈ 45% × 64% × total.  \n\n"
+        "Los valores son **estimaciones estadísticas**, no operaciones confirmadas.",
+        icon="ℹ️",
+    )
+    st.warning(
+        "⚖️ **Restricción BVC aplicada:** Extranjeros → Extranjeros = **0**.  \n"
+        "Las operaciones entre dos entidades extranjeras no requieren registro local "
+        "y por tanto **no pueden aparecer** en el Boletín Diario BVC. "
+        "Sus ventas se redistribuyen sólo entre compradores locales.",
+        icon="⚠️",
+    )
+
+    # ── Daily flow matrix for the selected date ───────────────────────────────
+    st.markdown(f"##### 📊 Matriz de Flujos — {chosen_date}")
+    st.caption(
+        "Filas = comprador estimado · Columnas = vendedor estimado · "
+        "Valores en M COP. Celdas más oscuras = mayor flujo."
+    )
+
+    # Shorten sector names for chart readability
+    def _shorten(name: str) -> str:
+        return name.split("/")[0].strip()
+
+    buyers_short  = buyers_df.copy()
+    sellers_short = sellers_df.copy()
+    buyers_short["Sector"]  = buyers_short["Sector"].apply(_shorten)
+    sellers_short["Sector"] = sellers_short["Sector"].apply(_shorten)
+
+    fm = _flow_matrix(buyers_short, sellers_short)
+
+    if fm.empty:
+        st.info("Sin datos de flujos para esta sesión.")
+    else:
+        # Melt for Altair heatmap
+        fm_long = (
+            fm.reset_index()
+            .rename(columns={"index": "Comprador"})
+            .melt(id_vars="Comprador", var_name="Vendedor", value_name="Flujo")
+        )
+
+        heatmap = (
+            alt.Chart(fm_long)
+            .mark_rect()
+            .encode(
+                x=alt.X("Vendedor:N",   title="Vendedor",   sort=None),
+                y=alt.Y("Comprador:N",  title="Comprador",  sort=None),
+                color=alt.Color(
+                    "Flujo:Q",
+                    title="M COP",
+                    scale=alt.Scale(scheme="blues"),
+                    legend=alt.Legend(format=",.0f"),
+                ),
+                tooltip=[
+                    alt.Tooltip("Comprador:N"),
+                    alt.Tooltip("Vendedor:N"),
+                    alt.Tooltip("Flujo:Q", title="Flujo estimado (M COP)", format=",.0f"),
+                ],
+            )
+            .properties(height=max(200, len(fm) * 55))
+        )
+        # Overlay value labels
+        text = heatmap.mark_text(color="white", fontSize=11, fontWeight="bold").encode(
+            text=alt.Text("Flujo:Q", format=",.0f"),
+            color=alt.condition(
+                alt.datum.Flujo > fm.values.max() * 0.5,
+                alt.value("white"),
+                alt.value("#333"),
+            ),
+        )
+        st.altair_chart(heatmap + text, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Top probable crosses (ranked list) ───────────────────────────────
+        st.markdown("##### 🏆 Cruces Más Probables — Sesión Seleccionada")
+        st.caption(
+            "Pares comprador–vendedor ordenados por flujo estimado. "
+            "Este ranking indica qué cruce es más probable, no cuál ocurrió exactamente."
+        )
+
+        top_crosses = (
+            fm_long[fm_long["Flujo"] > 0]
+            .sort_values("Flujo", ascending=False)
+            .reset_index(drop=True)
+        )
+        top_crosses.index += 1  # start ranking at 1
+        top_crosses["Flujo"] = top_crosses["Flujo"].apply(lambda x: f"{x:,.0f}")
+        top_crosses.columns = ["Comprador", "Vendedor", "Flujo Est. (M COP)"]
+        st.dataframe(top_crosses, use_container_width=True,
+                     column_config={"Flujo Est. (M COP)": st.column_config.TextColumn()})
+
+    st.markdown("---")
+
+    # ── Historical average flow matrix ────────────────────────────────────────
+    st.markdown("##### 📅 Patrón Histórico — Flujo Promedio por Sesión")
+    st.caption(
+        "Promedio de los flujos estimados en todas las sesiones disponibles. "
+        "Revela los **cruces estructurales**: parejas que se repiten consistentemente "
+        "independientemente del día."
+    )
+
+    with st.spinner("Calculando patrones históricos..."):
+        cross_hist = _build_cross_history(tuple(sorted(history_files.items())))
+
+    if cross_hist.empty:
+        st.info("No hay suficiente historial para calcular patrones.")
+    else:
+        # Shorten sector names for historical data
+        cross_hist = cross_hist.copy()
+        cross_hist["buyer_s"]  = cross_hist["buyer"].apply(_shorten)
+        cross_hist["seller_s"] = cross_hist["seller"].apply(_shorten)
+
+        # Average flow per pair across sessions
+        avg_flows = (
+            cross_hist.groupby(["buyer_s", "seller_s"])["flujo"]
+            .mean()
+            .reset_index()
+            .rename(columns={"buyer_s": "Comprador", "seller_s": "Vendedor",
+                             "flujo": "Flujo Promedio"})
+        )
+        n_sessions = cross_hist["date"].nunique()
+        st.caption(f"Basado en {n_sessions} sesión(es) con negociaciones de BGLT.")
+
+        hist_heatmap = (
+            alt.Chart(avg_flows)
+            .mark_rect()
+            .encode(
+                x=alt.X("Vendedor:N",   title="Vendedor",  sort=None),
+                y=alt.Y("Comprador:N",  title="Comprador", sort=None),
+                color=alt.Color(
+                    "Flujo Promedio:Q",
+                    title="M COP (prom.)",
+                    scale=alt.Scale(scheme="oranges"),
+                    legend=alt.Legend(format=",.0f"),
+                ),
+                tooltip=[
+                    alt.Tooltip("Comprador:N"),
+                    alt.Tooltip("Vendedor:N"),
+                    alt.Tooltip("Flujo Promedio:Q", title="Flujo prom. (M COP)",
+                                format=",.0f"),
+                ],
+            )
+            .properties(height=max(200, avg_flows["Comprador"].nunique() * 55))
+        )
+        hist_text = hist_heatmap.mark_text(fontSize=10, fontWeight="bold").encode(
+            text=alt.Text("Flujo Promedio:Q", format=",.0f"),
+            color=alt.condition(
+                alt.datum["Flujo Promedio"] > avg_flows["Flujo Promedio"].max() * 0.5,
+                alt.value("white"),
+                alt.value("#333"),
+            ),
+        )
+        st.altair_chart(hist_heatmap + hist_text, use_container_width=True)
+
+        # ── Dominant pairs (consistency score) ───────────────────────────
+        st.markdown("##### 🔁 Cruces Consistentes en el Tiempo")
+        st.caption(
+            "Pares que aparecen en el mayor número de sesiones. "
+            "Alta frecuencia = cruce estructural (no oportunístico)."
+        )
+
+        consistency = (
+            cross_hist[cross_hist["flujo"] > 0]
+            .groupby(["buyer_s", "seller_s"])
+            .agg(
+                sesiones=("date", "nunique"),
+                flujo_prom=("flujo", "mean"),
+                flujo_total=("flujo", "sum"),
+            )
+            .reset_index()
+            .sort_values("sesiones", ascending=False)
+            .rename(columns={
+                "buyer_s":    "Comprador",
+                "seller_s":   "Vendedor",
+                "sesiones":   "# Sesiones",
+                "flujo_prom": "Flujo Prom (M COP)",
+                "flujo_total":"Flujo Total (M COP)",
+            })
+            .reset_index(drop=True)
+        )
+        consistency.index += 1
+        st.dataframe(
+            consistency,
+            use_container_width=True,
+            hide_index=False,
+            column_config={
+                "Flujo Prom (M COP)":  st.column_config.NumberColumn(format=",.0f"),
+                "Flujo Total (M COP)": st.column_config.NumberColumn(format=",.0f"),
+            },
         )
