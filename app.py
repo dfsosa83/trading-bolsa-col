@@ -7,6 +7,7 @@ No local files required — works on Streamlit Community Cloud.
 import io
 import sys
 from datetime import date
+from itertools import combinations as _combinations
 from pathlib import Path
 
 import altair as alt
@@ -1086,6 +1087,109 @@ with tab_pension:
         )
 
 
+def _triangulate_with_bonds(
+    bond_df: pd.DataFrame,
+    buyers_df: pd.DataFrame,
+    sellers_df: pd.DataFrame,
+    tol_pct: float = 0.015,
+) -> list[dict]:
+    """
+    Identify high-confidence buyer→seller crosses by matching amounts.
+
+    The desk's insight: when the monto a sector compró/vendió coincides
+    EXACTLY (within tolerance) with the monto of one or more specific bonds,
+    the cross can be identified with high confidence — no model needed.
+
+    Algorithm
+    ---------
+    1. Find (buyer, seller) pairs whose amounts match exactly (within tol_pct).
+    2. For each matching pair, find the bond subset whose montos sum to that amount.
+    3. Record confidence = 'alta' if bonds found, 'probable' if amounts match
+       but bonds can't be attributed (e.g. simultáneas inflating the sector total).
+
+    BVC constraint: Extranjeros→Extranjeros is always excluded.
+
+    Returns
+    -------
+    List of dicts ordered by monto descending:
+      buyer, seller, bonds (list of nemo), bond_vtos, monto, num_opes, confidence
+    """
+    # Parse bond montos from the pre-formatted string ("18,315" → 18315.0)
+    bonds: dict[str, float] = {}
+    bond_meta: dict[str, dict] = {}
+    for _, row in bond_df.iterrows():
+        nemo = str(row["Nemotécnico"])
+        try:
+            monto = float(str(row["CV Monto"]).replace(",", ""))
+        except (ValueError, TypeError):
+            continue
+        if monto > 0:
+            bonds[nemo] = monto
+            bond_meta[nemo] = {
+                "vto":      str(row.get("Vencimiento", "")),
+                "num_opes": int(row.get("# Oper.", 0) or 0),
+            }
+
+    active_b = {
+        str(r["Sector"]): float(r["Monto Comprado"])
+        for _, r in buyers_df.iterrows()
+        if float(r["Monto Comprado"]) > 0
+    }
+    active_s = {
+        str(r["Sector"]): float(r["Monto Vendido"])
+        for _, r in sellers_df.iterrows()
+        if float(r["Monto Vendido"]) > 0
+    }
+
+    if not bonds or not active_b or not active_s:
+        return []
+
+    ext = next((k for k in list(active_b) + list(active_s) if "extran" in k.lower()), None)
+
+    def _find_bonds(target: float) -> list[str] | None:
+        """Subset-sum: find bonds whose montos sum to target ± tolerance."""
+        tol = max(target * tol_pct, 3.0)
+        for size in range(1, min(len(bonds), 6) + 1):
+            for combo in _combinations(bonds.items(), size):
+                if abs(sum(v for _, v in combo) - target) <= tol:
+                    return [k for k, _ in combo]
+        return None
+
+    crosses: list[dict] = []
+    used_b: set[str] = set()
+    used_s: set[str] = set()
+
+    # Match largest amounts first — greedy, works well for small n
+    for buyer, b_amt in sorted(active_b.items(), key=lambda x: -x[1]):
+        for seller, s_amt in sorted(active_s.items(), key=lambda x: -x[1]):
+            if buyer in used_b or seller in used_s:
+                continue
+            if ext and buyer == ext and seller == ext:
+                continue  # BVC constraint
+
+            tol = max(max(b_amt, s_amt) * tol_pct, 3.0)
+            if abs(b_amt - s_amt) > tol:
+                continue  # amounts don't match — not the same cross
+
+            matched = _find_bonds(b_amt)
+            num_opes = sum(bond_meta[b]["num_opes"] for b in matched) if matched else 0
+            vtos     = [bond_meta[b]["vto"][:7] for b in matched] if matched else []  # YYYY-MM
+
+            crosses.append({
+                "buyer":      buyer,
+                "seller":     seller,
+                "bonds":      matched or [],
+                "bond_vtos":  vtos,
+                "monto":      b_amt,
+                "num_opes":   num_opes,
+                "confidence": "alta" if matched else "probable",
+            })
+            used_b.add(buyer)
+            used_s.add(seller)
+
+    return sorted(crosses, key=lambda x: -x["monto"])
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_cross:
     st.subheader("🔀 Triangulación — Cruces Probables entre Participantes")
@@ -1106,11 +1210,63 @@ with tab_cross:
         icon="⚠️",
     )
 
-    # ── Daily flow matrix for the selected date ───────────────────────────────
-    st.markdown(f"##### 📊 Matriz de Flujos — {chosen_date}")
+    # ── Bond-level exact-match triangulation ─────────────────────────────────
+    st.markdown(f"##### 🎯 Cruces Identificados — {chosen_date}")
     st.caption(
-        "Filas = comprador estimado · Columnas = vendedor estimado · "
-        "Valores en M COP. Celdas más oscuras = mayor flujo."
+        "Cuando el monto que un sector **compró** coincide exactamente con el que otro sector "
+        "**vendió**, Y ese monto coincide con uno o más bonos específicos, el cruce puede "
+        "identificarse con **alta confianza** — sin necesidad de un modelo estadístico.  \n"
+        "Este es el mismo razonamiento que hace el escritorio manualmente."
+    )
+
+    crosses = _triangulate_with_bonds(bond_df, buyers_df, sellers_df)
+
+    if not crosses:
+        st.info("No se encontraron cruces con coincidencia exacta en esta sesión. "
+                "Ver modelo proporcional abajo.")
+    else:
+        # Build display table
+        rows_display = []
+        for c in crosses:
+            bond_str = "  +  ".join(c["bonds"]) if c["bonds"] else "—"
+            vto_str  = "  /  ".join(c["bond_vtos"]) if c["bond_vtos"] else "—"
+            short_b  = c["buyer"].split("/")[0].strip()
+            short_s  = c["seller"].split("/")[0].strip()
+            conf_str = "🟢 Alta" if c["confidence"] == "alta" else "🟡 Probable"
+            rows_display.append({
+                "Vendedor":      short_s,
+                "Comprador":     short_b,
+                "Bono(s)":       bond_str,
+                "Vencimiento(s)":vto_str,
+                "Monto (M COP)": f"{c['monto']:,.0f}",
+                "# Opes":        c["num_opes"] if c["num_opes"] > 0 else "—",
+                "Confianza":     conf_str,
+            })
+
+        st.dataframe(
+            pd.DataFrame(rows_display),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
+                "Confianza":     st.column_config.TextColumn("Confianza"),
+            },
+        )
+        st.caption(
+            "**Cómo leer la tabla:** cada fila representa un cruce estimado. "
+            "'Alta confianza' significa que los montos del sector Y del bono coinciden "
+            "dentro del 1.5% de tolerancia (diferencias de redondeo del BVC). "
+            "Los bonos listados son los que **más probablemente** se negociaron en ese cruce."
+        )
+
+    st.markdown("---")
+
+    # ── Aggregate flow matrix (proportional model) ────────────────────────────
+    st.markdown(f"##### 📊 Modelo Proporcional — Matriz de Flujos ({chosen_date})")
+    st.caption(
+        "Vista complementaria: cuando los montos NO coinciden exactamente (varios compradores "
+        "y vendedores con montos distintos), el modelo proporcional estima los flujos más "
+        "probables. Filas = comprador · Columnas = vendedor · Valores en M COP."
     )
 
     # Shorten sector names for chart readability
