@@ -63,6 +63,73 @@ def _get_trm() -> dict:
         return {"valor": 4_000.0, "vigencia": "N/D"}
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _get_pension_bglt() -> pd.DataFrame:
+    """
+    Fetch BGLT bond holdings of Colombian pension funds (AFPs) from the
+    Superintendencia Financiera dataset on datos.gov.co — Formato 351.
+
+    Source  : https://www.datos.gov.co/resource/ur2p-h4yf
+    Cadence : Monthly (fecha_de_corte = last day of the month)
+    Lag     : Typically 3-6 months behind the current date
+    Scope   : Only BGLT bonds (external debt USD) issued by Ministerio de Hacienda
+    Entities: Colfondos and Porvenir are the AFPs reporting BGLT in this dataset
+
+    Returns a clean DataFrame with columns:
+      entidad, fecha (period), fondo, nemotecnico, valor_b_cop (billions COP)
+    Returns an empty DataFrame on error.
+    """
+    try:
+        resp = requests.get(
+            "https://www.datos.gov.co/resource/ur2p-h4yf.json",
+            params={
+                "$select": (
+                    "nombre_de_entidad,fecha_de_corte,nombre_patrimonio,"
+                    "nemotecnico,valor_mercado_o_pres_pesos"
+                ),
+                "$where":  "nemotecnico like '%BGLT%'",
+                "$order":  "fecha_de_corte DESC",
+                "$limit":  "10000",
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows)
+        # Parse date as period (month precision is enough for monthly data)
+        df["fecha"] = pd.to_datetime(df["fecha_de_corte"]).dt.to_period("M")
+        # Convert market value from COP units to billions of COP
+        df["valor_b_cop"] = (
+            pd.to_numeric(df["valor_mercado_o_pres_pesos"], errors="coerce")
+            .fillna(0) / 1e9
+        )
+        # Clean entity names — source has extra quotes and long names
+        df["entidad"] = (
+            df["nombre_de_entidad"]
+            .str.replace('"', "", regex=False)
+            .str.split("Y ").str[0]      # "COLFONDOS S.A." Y "COLFONDOS" → "COLFONDOS S.A."
+            .str.strip()
+            # Shorten for display
+            .str.replace("COLFONDOS S.A.", "Colfondos", regex=False)
+            .str.replace("PORVENIR", "Porvenir", regex=False)
+            .str.replace("PROTECCION", "Protección", regex=False)
+            .str.replace("SKANDIA", "Skandia", regex=False)
+        )
+        # Shorten portfolio names
+        df["fondo"] = (
+            df["nombre_patrimonio"]
+            .str.title()
+            .str.replace("Fondo De Pensiones ", "", regex=False)
+            .str.replace("Fondo De Cesantias", "Cesantías", regex=False)
+        )
+        return df[["entidad", "fecha", "fondo", "nemotecnico", "valor_b_cop"]]
+    except Exception:
+        return pd.DataFrame()
+
+
 def _parse(xlsx_bytes: bytes, report_date: str):
     """Parse xlsx bytes into all dashboard data. Shared by both cached loaders."""
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
@@ -333,8 +400,8 @@ with col_download:
     )
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
-tab_daily, tab_hist, tab_yield = st.tabs(
-    ["📅 Vista Diaria", "📈 Posiciones Históricas", "📉 Curva de Tasas"]
+tab_daily, tab_hist, tab_yield, tab_pension = st.tabs(
+    ["📅 Vista Diaria", "📈 Posiciones Históricas", "📉 Curva de Tasas", "🏦 Fondos de Pensiones"]
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -704,4 +771,195 @@ with tab_yield:
                 "Tasa Máx":     st.column_config.NumberColumn(format="%.4f"),
                 "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
             },
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_pension:
+    st.subheader("🏦 Tenencias BGLT — Fondos de Pensiones Obligatorias")
+    st.info(
+        "**¿Qué muestra esta pestaña?**  \n"
+        "Las posiciones (tenencias) de bonos BGLT que los Fondos de Pensiones Obligatorias (AFPs) "
+        "mantienen en su portafolio, valoradas a precios de mercado en COP.  \n\n"
+        "**Importante:**  \n"
+        "• Los datos provienen del **Formato 351** de la Superintendencia Financiera (datos.gov.co)  \n"
+        "• La información es **mensual** y típicamente tiene un rezago de **3 a 6 meses**  \n"
+        "• Solo **Colfondos** y **Porvenir** reportan tenencias de BGLT en este dataset  \n"
+        "• Los valores son el precio de **mercado** (mark-to-market), no el valor nominal",
+        icon="ℹ️",
+    )
+
+    with st.spinner("Consultando Superintendencia Financiera..."):
+        pf = _get_pension_bglt()
+
+    if pf.empty:
+        st.warning(
+            "No se pudo obtener datos de pensiones. "
+            "Verifica la conexión o intenta más tarde."
+        )
+    else:
+        # ── Derived data ──────────────────────────────────────────────────────
+        latest_period  = pf["fecha"].max()
+        latest_str     = str(latest_period)           # e.g. "2026-01"
+        pf_latest      = pf[pf["fecha"] == latest_period]
+
+        # Total per entity at the latest cut-off
+        totals_latest = (
+            pf_latest.groupby("entidad")["valor_b_cop"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+
+        # ── KPIs ──────────────────────────────────────────────────────────────
+        k1, k2, k3 = st.columns(3)
+        k1.metric(
+            "📅 Último corte disponible",
+            latest_str,
+            help="La SFC publica con rezago. Este es el mes más reciente en el dataset.",
+        )
+        for col, (entity, val) in zip([k2, k3], totals_latest.items()):
+            col.metric(
+                f"Total BGLT — {entity}",
+                f"${val:,.1f} B COP",
+                help="Suma de todos los bonos BGLT en todos los fondos del AFP al último corte.",
+            )
+
+        st.markdown("---")
+
+        # ── Chart 1: Holdings evolution over time ──────────────────────────
+        st.markdown("##### 📈 Evolución de Tenencias BGLT por AFP")
+        st.caption(
+            "Valor total de bonos BGLT en portafolio a precio de mercado, por mes. "
+            "Una tendencia al alza puede reflejar nuevas compras **o** apreciación del precio del bono. "
+            "Una caída puede indicar ventas, vencimientos o depreciación."
+        )
+
+        evo = (
+            pf.groupby(["entidad", "fecha"])["valor_b_cop"]
+            .sum()
+            .reset_index()
+        )
+        evo["fecha_dt"] = evo["fecha"].dt.to_timestamp()
+
+        evo_chart = (
+            alt.Chart(evo)
+            .mark_line(point=True, strokeWidth=2)
+            .encode(
+                x=alt.X("fecha_dt:T", title="Mes",
+                         axis=alt.Axis(format="%b %Y", labelAngle=-30)),
+                y=alt.Y("valor_b_cop:Q", title="Valor de Mercado (B COP)",
+                         axis=alt.Axis(format=",.1f")),
+                color=alt.Color("entidad:N", title="AFP"),
+                tooltip=[
+                    alt.Tooltip("fecha_dt:T",    title="Mes",        format="%Y-%m"),
+                    alt.Tooltip("entidad:N",      title="AFP"),
+                    alt.Tooltip("valor_b_cop:Q",  title="B COP",      format=",.2f"),
+                ],
+            )
+            .properties(height=340)
+            .interactive()
+        )
+        st.altair_chart(evo_chart, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Chart 2: Holdings by bond (latest cut-off) ────────────────────
+        st.markdown(f"##### 🔍 Composición por Bono — Corte {latest_str}")
+        st.caption(
+            "Qué bonos BGLT específicos tiene cada AFP. "
+            "Cada barra representa un nemotécnico distinto. "
+            "Útil para identificar preferencias de **duración**: BGLT con vencimiento lejano = mayor riesgo de tasa."
+        )
+
+        bond_breakdown = (
+            pf_latest.groupby(["entidad", "nemotecnico"])["valor_b_cop"]
+            .sum()
+            .reset_index()
+        )
+
+        bond_chart = (
+            alt.Chart(bond_breakdown)
+            .mark_bar()
+            .encode(
+                x=alt.X("valor_b_cop:Q", title="Valor de Mercado (B COP)",
+                         axis=alt.Axis(format=",.1f")),
+                y=alt.Y("entidad:N", title=None, sort="-x"),
+                color=alt.Color("nemotecnico:N", title="Bono BGLT"),
+                order=alt.Order("valor_b_cop:Q", sort="descending"),
+                tooltip=[
+                    alt.Tooltip("entidad:N",     title="AFP"),
+                    alt.Tooltip("nemotecnico:N",  title="Bono"),
+                    alt.Tooltip("valor_b_cop:Q",  title="B COP", format=",.2f"),
+                ],
+            )
+            .properties(height=200)
+        )
+        st.altair_chart(bond_chart, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Chart 3: Holdings by fund type ────────────────────────────────
+        st.markdown(f"##### 🗂️ Distribución por Tipo de Fondo — Corte {latest_str}")
+        st.caption(
+            "Los fondos **Moderado** y **Mayor Riesgo** concentran más BGLT (activos de mayor duración). "
+            "El fondo **Conservador** y **Cesantías** suelen tener menos riesgo de tasa."
+        )
+
+        fondo_breakdown = (
+            pf_latest.groupby(["entidad", "fondo"])["valor_b_cop"]
+            .sum()
+            .reset_index()
+        )
+
+        fondo_chart = (
+            alt.Chart(fondo_breakdown)
+            .mark_bar(cornerRadiusEnd=3)
+            .encode(
+                x=alt.X("valor_b_cop:Q", title="Valor de Mercado (B COP)",
+                         axis=alt.Axis(format=",.1f")),
+                y=alt.Y("fondo:N", title=None, sort="-x"),
+                color=alt.Color("entidad:N", title="AFP"),
+                tooltip=[
+                    alt.Tooltip("entidad:N",    title="AFP"),
+                    alt.Tooltip("fondo:N",       title="Tipo de fondo"),
+                    alt.Tooltip("valor_b_cop:Q", title="B COP", format=",.2f"),
+                ],
+            )
+            .properties(height=max(180, len(fondo_breakdown) * 35))
+        )
+        st.altair_chart(fondo_chart, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── Detail table ───────────────────────────────────────────────────
+        st.markdown(f"##### 📋 Detalle por Bono y Fondo — Corte {latest_str}")
+        st.caption(
+            "Vista granular: cada fila es un bono BGLT específico dentro de un tipo de fondo. "
+            "Los valores están en **miles de millones de COP** (B COP = billones colombianos)."
+        )
+
+        detail = (
+            pf_latest.groupby(["entidad", "fondo", "nemotecnico"])["valor_b_cop"]
+            .sum()
+            .reset_index()
+            .sort_values(["entidad", "valor_b_cop"], ascending=[True, False])
+            .rename(columns={
+                "entidad":    "AFP",
+                "fondo":      "Tipo de Fondo",
+                "nemotecnico":"Bono",
+                "valor_b_cop":"Valor (B COP)",
+            })
+        )
+        st.dataframe(
+            detail,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Valor (B COP)": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+        st.caption(
+            "⚠️ **Protección** y **Skandia** no aparecen en esta tabla porque no reportan "
+            "tenencias de BGLT en el Formato 351 de la Superfinanciera. "
+            "Pueden tener posiciones en otros instrumentos de deuda pública."
         )
