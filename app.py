@@ -429,1065 +429,1078 @@ def _date_from_xlsx(p: Path) -> str:
     except IndexError:
         return p.stem
 
-history_files = {
-    _date_from_xlsx(p): str(p)
-    for p in sorted(_HISTORY_DIR.glob("BoletinDiario_*.xlsx"))
-    if len(p.stem.split("_")) >= 4
-}
 
-# Live API dates (re-checked every hour)
-with st.spinner("Consultando BVC..."):
-    try:
-        reports    = _get_reports()
-        api_map    = {r["date"]: r["attached"]["url"] for r in reports}
-    except Exception as e:
-        st.warning(f"No se pudo conectar con la API de BVC: {e}")
-        api_map = {}
 
-# Merge: history takes priority; API fills in recent dates not yet saved
-all_dates   = sorted(set(history_files) | set(api_map), reverse=True)
-today       = date.today().isoformat()
+# ── App main ─────────────────────────────────────────────────────────────────
+def _main():
+    history_files = {
+        _date_from_xlsx(p): str(p)
+        for p in sorted(_HISTORY_DIR.glob("BoletinDiario_*.xlsx"))
+        if len(p.stem.split("_")) >= 4
+    }
 
-if not all_dates:
-    st.error("No hay datos disponibles. Revisa la conexión o el repositorio.")
-    st.stop()
+    # Live API dates (re-checked every hour)
+    with st.spinner("Consultando BVC..."):
+        try:
+            reports    = _get_reports()
+            api_map    = {r["date"]: r["attached"]["url"] for r in reports}
+        except Exception as e:
+            st.warning(f"No se pudo conectar con la API de BVC: {e}")
+            api_map = {}
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
-chosen_date = st.sidebar.selectbox("📅 Fecha del informe", all_dates)
+    # Merge: history takes priority; API fills in recent dates not yet saved
+    all_dates   = sorted(set(history_files) | set(api_map), reverse=True)
+    today       = date.today().isoformat()
 
-if today not in all_dates:
-    st.sidebar.info(
-        f"ℹ️ El boletín de hoy ({today}) aún no está disponible.  \n"
-        "Mostrando el más reciente."
-    )
-
-st.sidebar.markdown("---")
-st.sidebar.markdown(f"**{len(all_dates)} fechas disponibles**")
-st.sidebar.markdown("BVC · RF-Mercado Secundario  \nRF-PorTipoInver")
-
-# ── TRM ────────────────────────────────────────────────────────────────────────
-trm_data = _get_trm()
-trm      = trm_data["valor"]
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    f"**TRM** `{trm:,.2f}` COP/USD  \n"
-    f"<small>Vigencia: {trm_data['vigencia']}  \n"
-    f"Fuente: Superfinanciera · datos.gov.co</small>",
-    unsafe_allow_html=True,
-)
-
-# ── Load & parse ───────────────────────────────────────────────────────────────
-with st.spinner("Cargando datos..."):
-    try:
-        if chosen_date in history_files:
-            bond_df, buyers_df, sellers_df, grand_total, report_bytes = _load_from_file(
-                history_files[chosen_date], chosen_date
-            )
-        else:
-            bond_df, buyers_df, sellers_df, grand_total, report_bytes = _load(
-                api_map[chosen_date], chosen_date
-            )
-    except Exception as e:
-        st.error(f"Error procesando el informe: {e}")
+    if not all_dates:
+        st.error("No hay datos disponibles. Revisa la conexión o el repositorio.")
         st.stop()
 
-# ── Header ─────────────────────────────────────────────────────────────────────
-st.title("📊 Bonos Deuda Pública Externa USD")
-st.caption(f"Informe diario · {chosen_date} · Sistema de Registro (OTC)")
-st.info(
-    "Este dashboard muestra las negociaciones OTC de Bonos de Deuda Pública Externa "
-    "denominados en dólares (BGLT) registradas en la BVC. "
-    "**Vista Diaria** detalla la sesión seleccionada; "
-    "**Posiciones Históricas** analiza tendencias y patrones entre sesiones.",
-    icon="ℹ️",
-)
+    # ── Sidebar ────────────────────────────────────────────────────────────────────
+    chosen_date = st.sidebar.selectbox("📅 Fecha del informe", all_dates)
 
-if grand_total == 0:
-    st.warning(
-        f"No hubo negociaciones de Bonos Deuda Pública Externa USD el **{chosen_date}**. "
-        "Selecciona otra fecha en el panel izquierdo."
-    )
-    st.stop()
+    if today not in all_dates:
+        st.sidebar.info(
+            f"ℹ️ El boletín de hoy ({today}) aún no está disponible.  \n"
+            "Mostrando el más reciente."
+        )
 
-col_metric, col_download = st.columns([3, 1])
-with col_metric:
-    total_usd = grand_total / trm
-    st.metric(label="Monto Total Negociado (COP)", value=f"${grand_total:,.0f} M")
-    st.caption(f"≈ USD {total_usd:,.2f} M · TRM {trm:,.2f}")
-with col_download:
-    st.download_button(
-        label="⬇️ Descargar Informe Excel",
-        data=report_bytes,
-        file_name=f"RF_Report_{chosen_date}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**{len(all_dates)} fechas disponibles**")
+    st.sidebar.markdown("BVC · RF-Mercado Secundario  \nRF-PorTipoInver")
+
+    # ── TRM ────────────────────────────────────────────────────────────────────────
+    trm_data = _get_trm()
+    trm      = trm_data["valor"]
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        f"**TRM** `{trm:,.2f}` COP/USD  \n"
+        f"<small>Vigencia: {trm_data['vigencia']}  \n"
+        f"Fuente: Superfinanciera · datos.gov.co</small>",
+        unsafe_allow_html=True,
     )
 
-# ── Tabs ─────────────────────────────────────────────────────────────────────
-tab_daily, tab_hist, tab_yield, tab_pension, tab_cross = st.tabs(
-    ["📅 Vista Diaria", "📈 Posiciones Históricas", "📉 Curva de Tasas",
-     "🏦 Fondos de Pensiones", "🔀 Triangulación"]
-)
-
-
-@contextmanager
-def _safe_tab(tab):
-    """
-    Enter a tab and catch any exception so a bug in one tab doesn't crash
-    the whole app. Shows the traceback inline instead of the generic
-    Streamlit "Oh no" error page.
-    """
-    with tab:
+    # ── Load & parse ───────────────────────────────────────────────────────────────
+    with st.spinner("Cargando datos..."):
         try:
-            yield
-        except Exception as _exc:
-            st.error(f"⚠️ Ocurrió un error en esta sección: **{type(_exc).__name__}**")
-            st.code(traceback.format_exc(), language="python")
+            if chosen_date in history_files:
+                bond_df, buyers_df, sellers_df, grand_total, report_bytes = _load_from_file(
+                    history_files[chosen_date], chosen_date
+                )
+            else:
+                bond_df, buyers_df, sellers_df, grand_total, report_bytes = _load(
+                    api_map[chosen_date], chosen_date
+                )
+        except Exception as e:
+            st.error(f"Error procesando el informe: {e}")
+            st.stop()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-with _safe_tab(tab_daily):
-
-    # ── Bond detail ──────────────────────────────────────────────────────────
-    st.subheader("Bonos BGLT")
-    st.caption(
-        "Detalle por nemotécnico de las operaciones de Compra-Venta registradas en el día. "
-        "Montos en millones de COP · Equivalente USD calculado con la TRM del día · Tasas en % efectivo anual."
+    # ── Header ─────────────────────────────────────────────────────────────────────
+    st.title("📊 Bonos Deuda Pública Externa USD")
+    st.caption(f"Informe diario · {chosen_date} · Sistema de Registro (OTC)")
+    st.info(
+        "Este dashboard muestra las negociaciones OTC de Bonos de Deuda Pública Externa "
+        "denominados en dólares (BGLT) registradas en la BVC. "
+        "**Vista Diaria** detalla la sesión seleccionada; "
+        "**Posiciones Históricas** analiza tendencias y patrones entre sesiones.",
+        icon="ℹ️",
     )
 
-    # Add USD equivalent column using current TRM
-    bond_display = bond_df.copy()
-    cop_numeric  = bond_display["CV Monto"].str.replace(",", "", regex=False).apply(pd.to_numeric, errors="coerce")
-    usd_col_pos  = bond_display.columns.get_loc("CV Monto") + 1
-    bond_display.insert(usd_col_pos, "Monto USD (M)",
-        (cop_numeric / trm).apply(lambda x: f"{x:,.2f}" if pd.notna(x) else "")
+    if grand_total == 0:
+        st.warning(
+            f"No hubo negociaciones de Bonos Deuda Pública Externa USD el **{chosen_date}**. "
+            "Selecciona otra fecha en el panel izquierdo."
+        )
+        st.stop()
+
+    col_metric, col_download = st.columns([3, 1])
+    with col_metric:
+        total_usd = grand_total / trm
+        st.metric(label="Monto Total Negociado (COP)", value=f"${grand_total:,.0f} M")
+        st.caption(f"≈ USD {total_usd:,.2f} M · TRM {trm:,.2f}")
+    with col_download:
+        st.download_button(
+            label="⬇️ Descargar Informe Excel",
+            data=report_bytes,
+            file_name=f"RF_Report_{chosen_date}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    # ── Tabs ─────────────────────────────────────────────────────────────────────
+    tab_daily, tab_hist, tab_yield, tab_pension, tab_cross = st.tabs(
+        ["📅 Vista Diaria", "📈 Posiciones Históricas", "📉 Curva de Tasas",
+         "🏦 Fondos de Pensiones", "🔀 Triangulación"]
     )
 
-    st.dataframe(
-        bond_display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "CV Monto":      st.column_config.TextColumn("CV Monto (M COP)"),
-            "Monto USD (M)": st.column_config.TextColumn("Monto USD (M)"),
-            "# Oper.":       st.column_config.NumberColumn("# Oper.",     format="%d"),
-            "Tasa Mín":      st.column_config.NumberColumn("Tasa Mín",    format="%.4f"),
-            "Tasa Máx":      st.column_config.NumberColumn("Tasa Máx",    format="%.4f"),
-            "Tasa Cierre":   st.column_config.NumberColumn("Tasa Cierre", format="%.4f"),
-            "Vencimiento":   st.column_config.TextColumn("Vencimiento"),
-        },
-    )
 
-    st.markdown("---")
+    @contextmanager
+    def _safe_tab(tab):
+        """
+        Enter a tab and catch any exception so a bug in one tab doesn't crash
+        the whole app. Shows the traceback inline instead of the generic
+        Streamlit "Oh no" error page.
+        """
+        with tab:
+            try:
+                yield
+            except Exception as _exc:
+                st.error(f"⚠️ Ocurrió un error en esta sección: **{type(_exc).__name__}**")
+                st.code(traceback.format_exc(), language="python")
 
-    # ── Buyers / Sellers ─────────────────────────────────────────────────────
-    st.subheader("Distribución por Tipo de Inversionista")
-    st.caption(
-        "Muestra qué sectores compraron y vendieron BGLT en la sesión. "
-        "Un sector con alto monto comprado y bajo vendido es **demandante neto** de papel; "
-        "el caso inverso indica **distribución**. "
-        "Los sectores sin operaciones no participaron en BGLT ese día."
-    )
-    col_b, col_s = st.columns(2)
 
-    def _render_side(col, df: pd.DataFrame, monto_col: str, title: str):
-        with col:
-            st.markdown(f"#### {title}")
-            active = df[df[monto_col] > 0]
-            zero   = df[df[monto_col] == 0]
-            display = active[[monto_col, "Sector"]].copy()
-            display[monto_col] = display[monto_col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
+    # ─────────────────────────────────────────────────────────────────────────────
+    with _safe_tab(tab_daily):
+
+        # ── Bond detail ──────────────────────────────────────────────────────────
+        st.subheader("Bonos BGLT")
+        st.caption(
+            "Detalle por nemotécnico de las operaciones de Compra-Venta registradas en el día. "
+            "Montos en millones de COP · Equivalente USD calculado con la TRM del día · Tasas en % efectivo anual."
+        )
+
+        # Add USD equivalent column using current TRM
+        bond_display = bond_df.copy()
+        cop_numeric  = bond_display["CV Monto"].str.replace(",", "", regex=False).apply(pd.to_numeric, errors="coerce")
+        usd_col_pos  = bond_display.columns.get_loc("CV Monto") + 1
+        bond_display.insert(usd_col_pos, "Monto USD (M)",
+            (cop_numeric / trm).apply(lambda x: f"{x:,.2f}" if pd.notna(x) else "")
+        )
+
+        st.dataframe(
+            bond_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "CV Monto":      st.column_config.TextColumn("CV Monto (M COP)"),
+                "Monto USD (M)": st.column_config.TextColumn("Monto USD (M)"),
+                "# Oper.":       st.column_config.NumberColumn("# Oper.",     format="%d"),
+                "Tasa Mín":      st.column_config.NumberColumn("Tasa Mín",    format="%.4f"),
+                "Tasa Máx":      st.column_config.NumberColumn("Tasa Máx",    format="%.4f"),
+                "Tasa Cierre":   st.column_config.NumberColumn("Tasa Cierre", format="%.4f"),
+                "Vencimiento":   st.column_config.TextColumn("Vencimiento"),
+            },
+        )
+
+        st.markdown("---")
+
+        # ── Buyers / Sellers ─────────────────────────────────────────────────────
+        st.subheader("Distribución por Tipo de Inversionista")
+        st.caption(
+            "Muestra qué sectores compraron y vendieron BGLT en la sesión. "
+            "Un sector con alto monto comprado y bajo vendido es **demandante neto** de papel; "
+            "el caso inverso indica **distribución**. "
+            "Los sectores sin operaciones no participaron en BGLT ese día."
+        )
+        col_b, col_s = st.columns(2)
+
+        def _render_side(col, df: pd.DataFrame, monto_col: str, title: str):
+            with col:
+                st.markdown(f"#### {title}")
+                active = df[df[monto_col] > 0]
+                zero   = df[df[monto_col] == 0]
+                display = active[[monto_col, "Sector"]].copy()
+                display[monto_col] = display[monto_col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
+                st.dataframe(
+                    display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={monto_col: st.column_config.TextColumn(monto_col)},
+                )
+                st.caption(
+                    f"**Total: ${active[monto_col].sum():,.0f} M** · "
+                    f"{len(active)} sector(es) activo(s) · "
+                    f"{len(zero)} sin operaciones"
+                )
+                if not zero.empty:
+                    with st.expander(f"Sectores sin operaciones ({len(zero)})"):
+                        st.dataframe(zero[["Sector"]], use_container_width=True, hide_index=True)
+
+        _render_side(col_b, buyers_df,  "Monto Comprado", "🟢 Compradores")
+        _render_side(col_s, sellers_df, "Monto Vendido",  "🔴 Vendedores")
+
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    with _safe_tab(tab_hist):
+        st.subheader("Posiciones Netas por Sector — Bonos Ext. USD")
+        st.caption(
+            "Positivo = comprador neto · Negativo = vendedor neto · "
+            "Solo sectores con actividad en al menos una sesión"
+        )
+
+        with st.spinner("Construyendo serie histórica..."):
+            hist_df = _build_history_df(tuple(sorted(history_files.items())))
+
+        if hist_df.empty:
+            st.info("No hay datos históricos disponibles aún.")
+        else:
+            # ── Prep ─────────────────────────────────────────────────────────
+            active_sectors = (
+                hist_df.groupby("sector")["net"]
+                .apply(lambda x: (x.abs() > 0).any())
+                .loc[lambda x: x]
+                .index.tolist()
+            )
+            h = hist_df[hist_df["sector"].isin(active_sectors)].copy()
+            h["date"]     = pd.to_datetime(h["date"])
+            h["sector_s"] = h["sector"].str.split("/").str[0].str.strip()
+
+            # ── KPIs ──────────────────────────────────────────────────────────
+            cum        = h.groupby("sector_s")["net"].sum().sort_values(ascending=False)
+            n_days     = int(h["date"].nunique())
+            top_buyer  = cum.index[0]  if len(cum) > 0 else "—"
+            top_seller = cum.index[-1] if len(cum) > 0 else "—"
+
+            k1, k2, k3 = st.columns(3)
+            k1.metric("📅 Fechas analizadas",    n_days)
+            k2.metric("🟢 Mayor comprador neto", top_buyer)
+            k3.metric("🔴 Mayor vendedor neto",  top_seller)
+
+            st.markdown("---")
+
+            # ── Line chart: net position per day per sector ───────────────────
+            st.markdown("##### Posición Neta Diaria por Sector")
+            st.caption(
+                "Cada línea es **comprado − vendido** por sector en cada sesión. "
+                "Valores **sobre cero** → comprador neto ese día; "
+                "**bajo cero** → vendedor neto. "
+                "Hover sobre un punto para ver el detalle de compras y ventas."
+            )
+
+            zero_rule = (
+                alt.Chart(pd.DataFrame({"y": [0]}))
+                .mark_rule(color="#666", strokeDash=[4, 4])
+                .encode(y="y:Q")
+            )
+            line_chart = (
+                alt.Chart(h)
+                .mark_line(point=True, strokeWidth=2)
+                .encode(
+                    x=alt.X("date:T", title="Fecha",
+                            axis=alt.Axis(format="%d %b", labelAngle=-30)),
+                    y=alt.Y("net:Q",  title="Posición Neta (M COP)",
+                            axis=alt.Axis(format=",.0f")),
+                    color=alt.Color("sector_s:N", title="Sector"),
+                    tooltip=[
+                        alt.Tooltip("date:T",     title="Fecha",         format="%Y-%m-%d"),
+                        alt.Tooltip("sector_s:N", title="Sector"),
+                        alt.Tooltip("net:Q",      title="Pos. Neta",     format=",.0f"),
+                        alt.Tooltip("comprado:Q", title="Comprado",      format=",.0f"),
+                        alt.Tooltip("vendido:Q",  title="Vendido",       format=",.0f"),
+                    ],
+                )
+                .properties(height=380)
+                .interactive()
+            )
+            st.altair_chart(zero_rule + line_chart, use_container_width=True)
+
+            st.markdown("---")
+
+            # ── Heatmap: sector × date ────────────────────────────────────────
+            st.markdown("##### Mapa de Calor — Posición Neta (M COP)")
+            st.caption(
+                "Tabla cruzada sector × fecha. "
+                "🟢 Verde intenso = gran comprador neto · 🔴 Rojo intenso = gran vendedor neto · Blanco/amarillo = neutral. "
+                "Útil para detectar **patrones recurrentes**: p.ej. si un sector aparece siempre en rojo, "
+                "es un distribuidor estructural de BGLT."
+            )
+
+            pivot = h.pivot_table(
+                index="sector_s", columns="date", values="net",
+                aggfunc="sum", fill_value=0,
+            )
+            pivot.columns = [d.strftime("%d/%m") for d in pivot.columns]
+            pivot.index.name = "Sector"
+
+            # Altair heatmap — interactive, no matplotlib dependency
+            pivot_long = (
+                pivot.reset_index()
+                .melt(id_vars="Sector", var_name="Fecha", value_name="Neto")
+            )
+            abs_max = float(pivot_long["Neto"].abs().max()) or 1.0
+            heat = (
+                alt.Chart(pivot_long)
+                .mark_rect()
+                .encode(
+                    x=alt.X("Fecha:N", sort=pivot.columns.tolist(), title=None),
+                    y=alt.Y("Sector:N", title=None),
+                    color=alt.Color(
+                        "Neto:Q",
+                        scale=alt.Scale(scheme="redyellowgreen", domainMid=0,
+                                        domain=[-abs_max, abs_max]),
+                        title="M COP",
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Sector:N"),
+                        alt.Tooltip("Fecha:N"),
+                        alt.Tooltip("Neto:Q", title="Pos. Neta (M COP)", format=",.0f"),
+                    ],
+                )
+                .properties(height=max(180, pivot.shape[0] * 45))
+            )
+            heat_text = heat.mark_text(fontSize=10).encode(
+                text=alt.Text("Neto:Q", format=",.0f"),
+                color=alt.condition(
+                    alt.datum.Neto > abs_max * 0.4,
+                    alt.value("white"), alt.value("#333")
+                ),
+            )
+            st.altair_chart(heat + heat_text, use_container_width=True)
+
+            st.markdown("---")
+
+            # ── Cumulative net bar ────────────────────────────────────────────
+            st.markdown("##### Posición Neta Acumulada en el Período")
+            st.caption(
+                "Suma de posiciones netas diarias en todas las sesiones analizadas. "
+                "Identifica los **compradores y vendedores estructurales** de BGLT: "
+                "barras verdes = acumulación neta de papel; barras rojas = distribución neta."
+            )
+
+            cum_df = (
+                h.groupby("sector_s")["net"]
+                .sum()
+                .reset_index()
+                .rename(columns={"sector_s": "Sector", "net": "Neto"})
+                .sort_values("Neto", ascending=False)
+            )
+            cum_df["Rol"] = cum_df["Neto"].apply(
+                lambda x: "Comprador" if x >= 0 else "Vendedor"
+            )
+
+            bar = (
+                alt.Chart(cum_df)
+                .mark_bar(cornerRadiusEnd=3)
+                .encode(
+                    x=alt.X("Neto:Q", title="Posición Neta Acumulada (M COP)",
+                            axis=alt.Axis(format=",.0f")),
+                    y=alt.Y("Sector:N", sort="-x", title=None),
+                    color=alt.Color(
+                        "Rol:N",
+                        scale=alt.Scale(
+                            domain=["Comprador", "Vendedor"],
+                            range=["#2ecc71", "#e74c3c"],
+                        ),
+                        legend=None,
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Sector:N"),
+                        alt.Tooltip("Neto:Q", title="Posición Neta", format=",.0f"),
+                        alt.Tooltip("Rol:N"),
+                    ],
+                )
+                .properties(height=max(200, len(cum_df) * 45))
+            )
+            st.altair_chart(bar, use_container_width=True)
+
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    with _safe_tab(tab_yield):
+        st.subheader("Curva de Tasas — Bonos BGLT")
+        st.caption(
+            "Análisis de tasas de cierre (% e.a.) de los bonos de Deuda Pública Externa USD. "
+            "Usa la fecha del panel izquierdo para ver el snapshot de curva de ese día."
+        )
+
+        with st.spinner("Cargando datos de tasas..."):
+            yield_df = _build_yield_history_df(tuple(sorted(history_files.items())))
+
+        if yield_df.empty:
+            st.info("No hay datos de tasas disponibles aún.")
+        else:
+            # ── Chart 1: Yield Curve snapshot ──────────────────────────────────
+            snap = yield_df[yield_df["date"] == pd.to_datetime(chosen_date)]
+            if snap.empty:
+                # Fall back to the most recent available session
+                snap      = yield_df[yield_df["date"] == yield_df["date"].max()]
+                snap_date = yield_df["date"].max().strftime("%Y-%m-%d")
+                st.caption(f"⚠️ Sin datos para {chosen_date}. Mostrando la sesión más reciente: {snap_date}.")
+            else:
+                snap_date = chosen_date
+
+            st.markdown(f"##### 📈 Curva de Tasas al {snap_date}")
+            st.caption(
+                "Cada punto es un bono BGLT que negóció en esa sesión. "
+                "**Eje X** = años al vencimiento · **Eje Y** = tasa de cierre (% e.a.). "
+                "El tamaño del punto refleja el monto negociado. "
+                "La línea punteada conecta los puntos ordenados por plazo, aproximando la forma de la curva."
+            )
+
+            # Dashed line connecting dots ordered by maturity
+            curve_line = (
+                alt.Chart(snap.sort_values("years_to_maturity"))
+                .mark_line(strokeDash=[5, 3], color="#888", strokeWidth=1.5)
+                .encode(
+                    x=alt.X("years_to_maturity:Q"),
+                    y=alt.Y("cv_tasa_cierre:Q"),
+                )
+            )
+            # Dots sized by monto, colored by bond
+            dots = (
+                alt.Chart(snap)
+                .mark_circle(opacity=0.9)
+                .encode(
+                    x=alt.X("years_to_maturity:Q", title="Años al Vencimiento",
+                            scale=alt.Scale(zero=False)),
+                    y=alt.Y("cv_tasa_cierre:Q", title="Tasa de Cierre (% e.a.)",
+                            scale=alt.Scale(zero=False),
+                            axis=alt.Axis(format=".4f")),
+                    size=alt.Size("cv_monto:Q", title="Monto (M COP)",
+                                  scale=alt.Scale(range=[150, 900])),
+                    color=alt.Color("nemotecnico:N", title="Bono"),
+                    tooltip=[
+                        alt.Tooltip("nemotecnico:N",       title="Bono"),
+                        alt.Tooltip("years_to_maturity:Q", title="Años al Vto.", format=".1f"),
+                        alt.Tooltip("cv_tasa_cierre:Q",    title="Tasa Cierre",  format=".4f"),
+                        alt.Tooltip("cv_tasa_min:Q",       title="Tasa Mín",     format=".4f"),
+                        alt.Tooltip("cv_tasa_max:Q",       title="Tasa Máx",     format=".4f"),
+                        alt.Tooltip("cv_monto:Q",          title="Monto (M COP)",format=",.0f"),
+                        alt.Tooltip("cv_num_opes:Q",       title="# Oper."),
+                    ],
+                )
+                .properties(height=360)
+                .interactive()
+            )
+            st.altair_chart(curve_line + dots, use_container_width=True)
+
+            st.markdown("---")
+
+            # ── Chart 2: Rate evolution per bond over time ───────────────────
+            st.markdown("##### 🗓️ Evolución de Tasas de Cierre por Bono")
+            st.caption(
+                "Cada línea es un bono BGLT. Solo se grafican días en que el bono negóció. "
+                "**Tasa al alza** = el bono se abarata (precio cae, rentabilidad sube). "
+                "**Tasa a la baja** = el bono se encarece (precio sube, rentabilidad cae)."
+            )
+
+            rate_evo = (
+                alt.Chart(yield_df)
+                .mark_line(point=True, strokeWidth=2)
+                .encode(
+                    x=alt.X("date:T", title="Fecha",
+                            axis=alt.Axis(format="%d %b", labelAngle=-30)),
+                    y=alt.Y("cv_tasa_cierre:Q", title="Tasa de Cierre (% e.a.)",
+                            scale=alt.Scale(zero=False),
+                            axis=alt.Axis(format=".4f")),
+                    color=alt.Color("nemotecnico:N", title="Bono"),
+                    tooltip=[
+                        alt.Tooltip("date:T",            title="Fecha",         format="%Y-%m-%d"),
+                        alt.Tooltip("nemotecnico:N",      title="Bono"),
+                        alt.Tooltip("cv_tasa_cierre:Q",   title="Tasa Cierre",   format=".4f"),
+                        alt.Tooltip("cv_tasa_min:Q",      title="Tasa Mín",      format=".4f"),
+                        alt.Tooltip("cv_tasa_max:Q",      title="Tasa Máx",      format=".4f"),
+                        alt.Tooltip("cv_monto:Q",         title="Monto (M COP)", format=",.0f"),
+                    ],
+                )
+                .properties(height=360)
+                .interactive()
+            )
+            st.altair_chart(rate_evo, use_container_width=True)
+
+            st.markdown("---")
+
+            # ── Table: latest rate per bond ────────────────────────────────────
+            st.markdown("##### 📌 Últimas Tasas Registradas por Bono")
+            st.caption(
+                "La última tasa de cierre observada para cada BGLT, "
+                "ordenada de menor a mayor plazo. "
+                "Sirve como referencia rápida del nivel de tasas vigente."
+            )
+
+            latest = (
+                yield_df.sort_values("date")
+                .groupby("nemotecnico", as_index=False)
+                .last()
+                .sort_values("years_to_maturity")
+                .rename(columns={
+                    "nemotecnico":       "Bono",
+                    "date":              "Última Sesión",
+                    "fec_vcto":          "Vencimiento",
+                    "years_to_maturity": "Años al Vto.",
+                    "cv_tasa_cierre":    "Tasa Cierre",
+                    "cv_tasa_min":       "Tasa Mín",
+                    "cv_tasa_max":       "Tasa Máx",
+                    "cv_monto":          "Monto (M COP)",
+                    "cv_num_opes":       "# Oper.",
+                })
+            )
+            latest["Última Sesión"] = latest["Última Sesión"].dt.strftime("%Y-%m-%d")
+            latest["Vencimiento"]   = latest["Vencimiento"].dt.strftime("%Y-%m-%d")
+            latest["Monto (M COP)"] = latest["Monto (M COP)"].apply(
+                lambda x: f"{x:,.0f}" if pd.notna(x) else ""
+            )
+
             st.dataframe(
-                display,
+                latest[[
+                    "Bono", "Última Sesión", "Vencimiento", "Años al Vto.",
+                    "Tasa Cierre", "Tasa Mín", "Tasa Máx", "Monto (M COP)", "# Oper.",
+                ]],
                 use_container_width=True,
                 hide_index=True,
-                column_config={monto_col: st.column_config.TextColumn(monto_col)},
+                column_config={
+                    "Años al Vto.": st.column_config.NumberColumn(format="%.1f"),
+                    "Tasa Cierre":  st.column_config.NumberColumn(format="%.4f"),
+                    "Tasa Mín":     st.column_config.NumberColumn(format="%.4f"),
+                    "Tasa Máx":     st.column_config.NumberColumn(format="%.4f"),
+                    "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
+                },
+            )
+
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    with _safe_tab(tab_pension):
+        st.subheader("🏦 Tenencias BGLT — Fondos de Pensiones Obligatorias")
+        st.info(
+            "**¿Qué muestra esta pestaña?**  \n"
+            "Las posiciones (tenencias) de bonos BGLT que los Fondos de Pensiones Obligatorias (AFPs) "
+            "mantienen en su portafolio, valoradas a precios de mercado en COP.  \n\n"
+            "**Importante:**  \n"
+            "• Los datos provienen del **Formato 351** de la Superintendencia Financiera (datos.gov.co)  \n"
+            "• La información es **mensual** y típicamente tiene un rezago de **3 a 6 meses**  \n"
+            "• Solo **Colfondos** y **Porvenir** reportan tenencias de BGLT en este dataset  \n"
+            "• Los valores son el precio de **mercado** (mark-to-market), no el valor nominal",
+            icon="ℹ️",
+        )
+
+        with st.spinner("Consultando Superintendencia Financiera..."):
+            pf = _get_pension_bglt()
+
+        if pf.empty:
+            st.warning(
+                "No se pudo obtener datos de pensiones. "
+                "Verifica la conexión o intenta más tarde."
+            )
+        else:
+            # ── Derived data ──────────────────────────────────────────────────────
+            latest_period  = pf["fecha"].max()
+            latest_str     = str(latest_period)           # e.g. "2026-01"
+            pf_latest      = pf[pf["fecha"] == latest_period]
+
+            # Total per entity at the latest cut-off
+            totals_latest = (
+                pf_latest.groupby("entidad")["valor_b_cop"]
+                .sum()
+                .sort_values(ascending=False)
+            )
+
+            # ── KPIs ──────────────────────────────────────────────────────────────
+            k1, k2, k3 = st.columns(3)
+            k1.metric(
+                "📅 Último corte disponible",
+                latest_str,
+                help="La SFC publica con rezago. Este es el mes más reciente en el dataset.",
+            )
+            for col, (entity, val) in zip([k2, k3], totals_latest.items()):
+                col.metric(
+                    f"Total BGLT — {entity}",
+                    f"${val:,.1f} B COP",
+                    help="Suma de todos los bonos BGLT en todos los fondos del AFP al último corte.",
+                )
+
+            st.markdown("---")
+
+            # ── Chart 1: Holdings evolution over time ──────────────────────────
+            st.markdown("##### 📈 Evolución de Tenencias BGLT por AFP")
+            st.caption(
+                "Valor total de bonos BGLT en portafolio a precio de mercado, por mes. "
+                "Una tendencia al alza puede reflejar nuevas compras **o** apreciación del precio del bono. "
+                "Una caída puede indicar ventas, vencimientos o depreciación."
+            )
+
+            evo = (
+                pf.groupby(["entidad", "fecha"])["valor_b_cop"]
+                .sum()
+                .reset_index()
+            )
+            evo["fecha_dt"] = evo["fecha"].dt.to_timestamp()
+
+            evo_chart = (
+                alt.Chart(evo)
+                .mark_line(point=True, strokeWidth=2)
+                .encode(
+                    x=alt.X("fecha_dt:T", title="Mes",
+                             axis=alt.Axis(format="%b %Y", labelAngle=-30)),
+                    y=alt.Y("valor_b_cop:Q", title="Valor de Mercado (B COP)",
+                             axis=alt.Axis(format=",.1f")),
+                    color=alt.Color("entidad:N", title="AFP"),
+                    tooltip=[
+                        alt.Tooltip("fecha_dt:T",    title="Mes",        format="%Y-%m"),
+                        alt.Tooltip("entidad:N",      title="AFP"),
+                        alt.Tooltip("valor_b_cop:Q",  title="B COP",      format=",.2f"),
+                    ],
+                )
+                .properties(height=340)
+                .interactive()
+            )
+            st.altair_chart(evo_chart, use_container_width=True)
+
+            st.markdown("---")
+
+            # ── Chart 2: Holdings by bond (latest cut-off) ────────────────────
+            st.markdown(f"##### 🔍 Composición por Bono — Corte {latest_str}")
+            st.caption(
+                "Qué bonos BGLT específicos tiene cada AFP. "
+                "Cada barra representa un nemotécnico distinto. "
+                "Útil para identificar preferencias de **duración**: BGLT con vencimiento lejano = mayor riesgo de tasa."
+            )
+
+            bond_breakdown = (
+                pf_latest.groupby(["entidad", "nemotecnico"])["valor_b_cop"]
+                .sum()
+                .reset_index()
+            )
+
+            bond_chart = (
+                alt.Chart(bond_breakdown)
+                .mark_bar()
+                .encode(
+                    x=alt.X("valor_b_cop:Q", title="Valor de Mercado (B COP)",
+                             axis=alt.Axis(format=",.1f")),
+                    y=alt.Y("entidad:N", title=None, sort="-x"),
+                    color=alt.Color("nemotecnico:N", title="Bono BGLT"),
+                    order=alt.Order("valor_b_cop:Q", sort="descending"),
+                    tooltip=[
+                        alt.Tooltip("entidad:N",     title="AFP"),
+                        alt.Tooltip("nemotecnico:N",  title="Bono"),
+                        alt.Tooltip("valor_b_cop:Q",  title="B COP", format=",.2f"),
+                    ],
+                )
+                .properties(height=200)
+            )
+            st.altair_chart(bond_chart, use_container_width=True)
+
+            st.markdown("---")
+
+            # ── Chart 3: Holdings by fund type ────────────────────────────────
+            st.markdown(f"##### 🗂️ Distribución por Tipo de Fondo — Corte {latest_str}")
+            st.caption(
+                "Los fondos **Moderado** y **Mayor Riesgo** concentran más BGLT (activos de mayor duración). "
+                "El fondo **Conservador** y **Cesantías** suelen tener menos riesgo de tasa."
+            )
+
+            fondo_breakdown = (
+                pf_latest.groupby(["entidad", "fondo"])["valor_b_cop"]
+                .sum()
+                .reset_index()
+            )
+
+            fondo_chart = (
+                alt.Chart(fondo_breakdown)
+                .mark_bar(cornerRadiusEnd=3)
+                .encode(
+                    x=alt.X("valor_b_cop:Q", title="Valor de Mercado (B COP)",
+                             axis=alt.Axis(format=",.1f")),
+                    y=alt.Y("fondo:N", title=None, sort="-x"),
+                    color=alt.Color("entidad:N", title="AFP"),
+                    tooltip=[
+                        alt.Tooltip("entidad:N",    title="AFP"),
+                        alt.Tooltip("fondo:N",       title="Tipo de fondo"),
+                        alt.Tooltip("valor_b_cop:Q", title="B COP", format=",.2f"),
+                    ],
+                )
+                .properties(height=max(180, len(fondo_breakdown) * 35))
+            )
+            st.altair_chart(fondo_chart, use_container_width=True)
+
+            st.markdown("---")
+
+            # ── Detail table ───────────────────────────────────────────────────
+            st.markdown(f"##### 📋 Detalle por Bono y Fondo — Corte {latest_str}")
+            st.caption(
+                "Vista granular: cada fila es un bono BGLT específico dentro de un tipo de fondo. "
+                "Los valores están en **miles de millones de COP** (B COP = billones colombianos)."
+            )
+
+            detail = (
+                pf_latest.groupby(["entidad", "fondo", "nemotecnico"])["valor_b_cop"]
+                .sum()
+                .reset_index()
+                .sort_values(["entidad", "valor_b_cop"], ascending=[True, False])
+                .rename(columns={
+                    "entidad":    "AFP",
+                    "fondo":      "Tipo de Fondo",
+                    "nemotecnico":"Bono",
+                    "valor_b_cop":"Valor (B COP)",
+                })
+            )
+            st.dataframe(
+                detail,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Valor (B COP)": st.column_config.NumberColumn(format="%.2f"),
+                },
             )
             st.caption(
-                f"**Total: ${active[monto_col].sum():,.0f} M** · "
-                f"{len(active)} sector(es) activo(s) · "
-                f"{len(zero)} sin operaciones"
-            )
-            if not zero.empty:
-                with st.expander(f"Sectores sin operaciones ({len(zero)})"):
-                    st.dataframe(zero[["Sector"]], use_container_width=True, hide_index=True)
-
-    _render_side(col_b, buyers_df,  "Monto Comprado", "🟢 Compradores")
-    _render_side(col_s, sellers_df, "Monto Vendido",  "🔴 Vendedores")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-with _safe_tab(tab_hist):
-    st.subheader("Posiciones Netas por Sector — Bonos Ext. USD")
-    st.caption(
-        "Positivo = comprador neto · Negativo = vendedor neto · "
-        "Solo sectores con actividad en al menos una sesión"
-    )
-
-    with st.spinner("Construyendo serie histórica..."):
-        hist_df = _build_history_df(tuple(sorted(history_files.items())))
-
-    if hist_df.empty:
-        st.info("No hay datos históricos disponibles aún.")
-    else:
-        # ── Prep ─────────────────────────────────────────────────────────
-        active_sectors = (
-            hist_df.groupby("sector")["net"]
-            .apply(lambda x: (x.abs() > 0).any())
-            .loc[lambda x: x]
-            .index.tolist()
-        )
-        h = hist_df[hist_df["sector"].isin(active_sectors)].copy()
-        h["date"]     = pd.to_datetime(h["date"])
-        h["sector_s"] = h["sector"].str.split("/").str[0].str.strip()
-
-        # ── KPIs ──────────────────────────────────────────────────────────
-        cum        = h.groupby("sector_s")["net"].sum().sort_values(ascending=False)
-        n_days     = int(h["date"].nunique())
-        top_buyer  = cum.index[0]  if len(cum) > 0 else "—"
-        top_seller = cum.index[-1] if len(cum) > 0 else "—"
-
-        k1, k2, k3 = st.columns(3)
-        k1.metric("📅 Fechas analizadas",    n_days)
-        k2.metric("🟢 Mayor comprador neto", top_buyer)
-        k3.metric("🔴 Mayor vendedor neto",  top_seller)
-
-        st.markdown("---")
-
-        # ── Line chart: net position per day per sector ───────────────────
-        st.markdown("##### Posición Neta Diaria por Sector")
-        st.caption(
-            "Cada línea es **comprado − vendido** por sector en cada sesión. "
-            "Valores **sobre cero** → comprador neto ese día; "
-            "**bajo cero** → vendedor neto. "
-            "Hover sobre un punto para ver el detalle de compras y ventas."
-        )
-
-        zero_rule = (
-            alt.Chart(pd.DataFrame({"y": [0]}))
-            .mark_rule(color="#666", strokeDash=[4, 4])
-            .encode(y="y:Q")
-        )
-        line_chart = (
-            alt.Chart(h)
-            .mark_line(point=True, strokeWidth=2)
-            .encode(
-                x=alt.X("date:T", title="Fecha",
-                        axis=alt.Axis(format="%d %b", labelAngle=-30)),
-                y=alt.Y("net:Q",  title="Posición Neta (M COP)",
-                        axis=alt.Axis(format=",.0f")),
-                color=alt.Color("sector_s:N", title="Sector"),
-                tooltip=[
-                    alt.Tooltip("date:T",     title="Fecha",         format="%Y-%m-%d"),
-                    alt.Tooltip("sector_s:N", title="Sector"),
-                    alt.Tooltip("net:Q",      title="Pos. Neta",     format=",.0f"),
-                    alt.Tooltip("comprado:Q", title="Comprado",      format=",.0f"),
-                    alt.Tooltip("vendido:Q",  title="Vendido",       format=",.0f"),
-                ],
-            )
-            .properties(height=380)
-            .interactive()
-        )
-        st.altair_chart(zero_rule + line_chart, use_container_width=True)
-
-        st.markdown("---")
-
-        # ── Heatmap: sector × date ────────────────────────────────────────
-        st.markdown("##### Mapa de Calor — Posición Neta (M COP)")
-        st.caption(
-            "Tabla cruzada sector × fecha. "
-            "🟢 Verde intenso = gran comprador neto · 🔴 Rojo intenso = gran vendedor neto · Blanco/amarillo = neutral. "
-            "Útil para detectar **patrones recurrentes**: p.ej. si un sector aparece siempre en rojo, "
-            "es un distribuidor estructural de BGLT."
-        )
-
-        pivot = h.pivot_table(
-            index="sector_s", columns="date", values="net",
-            aggfunc="sum", fill_value=0,
-        )
-        pivot.columns = [d.strftime("%d/%m") for d in pivot.columns]
-        pivot.index.name = "Sector"
-
-        # Altair heatmap — interactive, no matplotlib dependency
-        pivot_long = (
-            pivot.reset_index()
-            .melt(id_vars="Sector", var_name="Fecha", value_name="Neto")
-        )
-        abs_max = float(pivot_long["Neto"].abs().max()) or 1.0
-        heat = (
-            alt.Chart(pivot_long)
-            .mark_rect()
-            .encode(
-                x=alt.X("Fecha:N", sort=pivot.columns.tolist(), title=None),
-                y=alt.Y("Sector:N", title=None),
-                color=alt.Color(
-                    "Neto:Q",
-                    scale=alt.Scale(scheme="redyellowgreen", domainMid=0,
-                                    domain=[-abs_max, abs_max]),
-                    title="M COP",
-                ),
-                tooltip=[
-                    alt.Tooltip("Sector:N"),
-                    alt.Tooltip("Fecha:N"),
-                    alt.Tooltip("Neto:Q", title="Pos. Neta (M COP)", format=",.0f"),
-                ],
-            )
-            .properties(height=max(180, pivot.shape[0] * 45))
-        )
-        heat_text = heat.mark_text(fontSize=10).encode(
-            text=alt.Text("Neto:Q", format=",.0f"),
-            color=alt.condition(
-                alt.datum.Neto > abs_max * 0.4,
-                alt.value("white"), alt.value("#333")
-            ),
-        )
-        st.altair_chart(heat + heat_text, use_container_width=True)
-
-        st.markdown("---")
-
-        # ── Cumulative net bar ────────────────────────────────────────────
-        st.markdown("##### Posición Neta Acumulada en el Período")
-        st.caption(
-            "Suma de posiciones netas diarias en todas las sesiones analizadas. "
-            "Identifica los **compradores y vendedores estructurales** de BGLT: "
-            "barras verdes = acumulación neta de papel; barras rojas = distribución neta."
-        )
-
-        cum_df = (
-            h.groupby("sector_s")["net"]
-            .sum()
-            .reset_index()
-            .rename(columns={"sector_s": "Sector", "net": "Neto"})
-            .sort_values("Neto", ascending=False)
-        )
-        cum_df["Rol"] = cum_df["Neto"].apply(
-            lambda x: "Comprador" if x >= 0 else "Vendedor"
-        )
-
-        bar = (
-            alt.Chart(cum_df)
-            .mark_bar(cornerRadiusEnd=3)
-            .encode(
-                x=alt.X("Neto:Q", title="Posición Neta Acumulada (M COP)",
-                        axis=alt.Axis(format=",.0f")),
-                y=alt.Y("Sector:N", sort="-x", title=None),
-                color=alt.Color(
-                    "Rol:N",
-                    scale=alt.Scale(
-                        domain=["Comprador", "Vendedor"],
-                        range=["#2ecc71", "#e74c3c"],
-                    ),
-                    legend=None,
-                ),
-                tooltip=[
-                    alt.Tooltip("Sector:N"),
-                    alt.Tooltip("Neto:Q", title="Posición Neta", format=",.0f"),
-                    alt.Tooltip("Rol:N"),
-                ],
-            )
-            .properties(height=max(200, len(cum_df) * 45))
-        )
-        st.altair_chart(bar, use_container_width=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-with _safe_tab(tab_yield):
-    st.subheader("Curva de Tasas — Bonos BGLT")
-    st.caption(
-        "Análisis de tasas de cierre (% e.a.) de los bonos de Deuda Pública Externa USD. "
-        "Usa la fecha del panel izquierdo para ver el snapshot de curva de ese día."
-    )
-
-    with st.spinner("Cargando datos de tasas..."):
-        yield_df = _build_yield_history_df(tuple(sorted(history_files.items())))
-
-    if yield_df.empty:
-        st.info("No hay datos de tasas disponibles aún.")
-    else:
-        # ── Chart 1: Yield Curve snapshot ──────────────────────────────────
-        snap = yield_df[yield_df["date"] == pd.to_datetime(chosen_date)]
-        if snap.empty:
-            # Fall back to the most recent available session
-            snap      = yield_df[yield_df["date"] == yield_df["date"].max()]
-            snap_date = yield_df["date"].max().strftime("%Y-%m-%d")
-            st.caption(f"⚠️ Sin datos para {chosen_date}. Mostrando la sesión más reciente: {snap_date}.")
-        else:
-            snap_date = chosen_date
-
-        st.markdown(f"##### 📈 Curva de Tasas al {snap_date}")
-        st.caption(
-            "Cada punto es un bono BGLT que negóció en esa sesión. "
-            "**Eje X** = años al vencimiento · **Eje Y** = tasa de cierre (% e.a.). "
-            "El tamaño del punto refleja el monto negociado. "
-            "La línea punteada conecta los puntos ordenados por plazo, aproximando la forma de la curva."
-        )
-
-        # Dashed line connecting dots ordered by maturity
-        curve_line = (
-            alt.Chart(snap.sort_values("years_to_maturity"))
-            .mark_line(strokeDash=[5, 3], color="#888", strokeWidth=1.5)
-            .encode(
-                x=alt.X("years_to_maturity:Q"),
-                y=alt.Y("cv_tasa_cierre:Q"),
-            )
-        )
-        # Dots sized by monto, colored by bond
-        dots = (
-            alt.Chart(snap)
-            .mark_circle(opacity=0.9)
-            .encode(
-                x=alt.X("years_to_maturity:Q", title="Años al Vencimiento",
-                        scale=alt.Scale(zero=False)),
-                y=alt.Y("cv_tasa_cierre:Q", title="Tasa de Cierre (% e.a.)",
-                        scale=alt.Scale(zero=False),
-                        axis=alt.Axis(format=".4f")),
-                size=alt.Size("cv_monto:Q", title="Monto (M COP)",
-                              scale=alt.Scale(range=[150, 900])),
-                color=alt.Color("nemotecnico:N", title="Bono"),
-                tooltip=[
-                    alt.Tooltip("nemotecnico:N",       title="Bono"),
-                    alt.Tooltip("years_to_maturity:Q", title="Años al Vto.", format=".1f"),
-                    alt.Tooltip("cv_tasa_cierre:Q",    title="Tasa Cierre",  format=".4f"),
-                    alt.Tooltip("cv_tasa_min:Q",       title="Tasa Mín",     format=".4f"),
-                    alt.Tooltip("cv_tasa_max:Q",       title="Tasa Máx",     format=".4f"),
-                    alt.Tooltip("cv_monto:Q",          title="Monto (M COP)",format=",.0f"),
-                    alt.Tooltip("cv_num_opes:Q",       title="# Oper."),
-                ],
-            )
-            .properties(height=360)
-            .interactive()
-        )
-        st.altair_chart(curve_line + dots, use_container_width=True)
-
-        st.markdown("---")
-
-        # ── Chart 2: Rate evolution per bond over time ───────────────────
-        st.markdown("##### 🗓️ Evolución de Tasas de Cierre por Bono")
-        st.caption(
-            "Cada línea es un bono BGLT. Solo se grafican días en que el bono negóció. "
-            "**Tasa al alza** = el bono se abarata (precio cae, rentabilidad sube). "
-            "**Tasa a la baja** = el bono se encarece (precio sube, rentabilidad cae)."
-        )
-
-        rate_evo = (
-            alt.Chart(yield_df)
-            .mark_line(point=True, strokeWidth=2)
-            .encode(
-                x=alt.X("date:T", title="Fecha",
-                        axis=alt.Axis(format="%d %b", labelAngle=-30)),
-                y=alt.Y("cv_tasa_cierre:Q", title="Tasa de Cierre (% e.a.)",
-                        scale=alt.Scale(zero=False),
-                        axis=alt.Axis(format=".4f")),
-                color=alt.Color("nemotecnico:N", title="Bono"),
-                tooltip=[
-                    alt.Tooltip("date:T",            title="Fecha",         format="%Y-%m-%d"),
-                    alt.Tooltip("nemotecnico:N",      title="Bono"),
-                    alt.Tooltip("cv_tasa_cierre:Q",   title="Tasa Cierre",   format=".4f"),
-                    alt.Tooltip("cv_tasa_min:Q",      title="Tasa Mín",      format=".4f"),
-                    alt.Tooltip("cv_tasa_max:Q",      title="Tasa Máx",      format=".4f"),
-                    alt.Tooltip("cv_monto:Q",         title="Monto (M COP)", format=",.0f"),
-                ],
-            )
-            .properties(height=360)
-            .interactive()
-        )
-        st.altair_chart(rate_evo, use_container_width=True)
-
-        st.markdown("---")
-
-        # ── Table: latest rate per bond ────────────────────────────────────
-        st.markdown("##### 📌 Últimas Tasas Registradas por Bono")
-        st.caption(
-            "La última tasa de cierre observada para cada BGLT, "
-            "ordenada de menor a mayor plazo. "
-            "Sirve como referencia rápida del nivel de tasas vigente."
-        )
-
-        latest = (
-            yield_df.sort_values("date")
-            .groupby("nemotecnico", as_index=False)
-            .last()
-            .sort_values("years_to_maturity")
-            .rename(columns={
-                "nemotecnico":       "Bono",
-                "date":              "Última Sesión",
-                "fec_vcto":          "Vencimiento",
-                "years_to_maturity": "Años al Vto.",
-                "cv_tasa_cierre":    "Tasa Cierre",
-                "cv_tasa_min":       "Tasa Mín",
-                "cv_tasa_max":       "Tasa Máx",
-                "cv_monto":          "Monto (M COP)",
-                "cv_num_opes":       "# Oper.",
-            })
-        )
-        latest["Última Sesión"] = latest["Última Sesión"].dt.strftime("%Y-%m-%d")
-        latest["Vencimiento"]   = latest["Vencimiento"].dt.strftime("%Y-%m-%d")
-        latest["Monto (M COP)"] = latest["Monto (M COP)"].apply(
-            lambda x: f"{x:,.0f}" if pd.notna(x) else ""
-        )
-
-        st.dataframe(
-            latest[[
-                "Bono", "Última Sesión", "Vencimiento", "Años al Vto.",
-                "Tasa Cierre", "Tasa Mín", "Tasa Máx", "Monto (M COP)", "# Oper.",
-            ]],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Años al Vto.": st.column_config.NumberColumn(format="%.1f"),
-                "Tasa Cierre":  st.column_config.NumberColumn(format="%.4f"),
-                "Tasa Mín":     st.column_config.NumberColumn(format="%.4f"),
-                "Tasa Máx":     st.column_config.NumberColumn(format="%.4f"),
-                "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
-            },
-        )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-with _safe_tab(tab_pension):
-    st.subheader("🏦 Tenencias BGLT — Fondos de Pensiones Obligatorias")
-    st.info(
-        "**¿Qué muestra esta pestaña?**  \n"
-        "Las posiciones (tenencias) de bonos BGLT que los Fondos de Pensiones Obligatorias (AFPs) "
-        "mantienen en su portafolio, valoradas a precios de mercado en COP.  \n\n"
-        "**Importante:**  \n"
-        "• Los datos provienen del **Formato 351** de la Superintendencia Financiera (datos.gov.co)  \n"
-        "• La información es **mensual** y típicamente tiene un rezago de **3 a 6 meses**  \n"
-        "• Solo **Colfondos** y **Porvenir** reportan tenencias de BGLT en este dataset  \n"
-        "• Los valores son el precio de **mercado** (mark-to-market), no el valor nominal",
-        icon="ℹ️",
-    )
-
-    with st.spinner("Consultando Superintendencia Financiera..."):
-        pf = _get_pension_bglt()
-
-    if pf.empty:
-        st.warning(
-            "No se pudo obtener datos de pensiones. "
-            "Verifica la conexión o intenta más tarde."
-        )
-    else:
-        # ── Derived data ──────────────────────────────────────────────────────
-        latest_period  = pf["fecha"].max()
-        latest_str     = str(latest_period)           # e.g. "2026-01"
-        pf_latest      = pf[pf["fecha"] == latest_period]
-
-        # Total per entity at the latest cut-off
-        totals_latest = (
-            pf_latest.groupby("entidad")["valor_b_cop"]
-            .sum()
-            .sort_values(ascending=False)
-        )
-
-        # ── KPIs ──────────────────────────────────────────────────────────────
-        k1, k2, k3 = st.columns(3)
-        k1.metric(
-            "📅 Último corte disponible",
-            latest_str,
-            help="La SFC publica con rezago. Este es el mes más reciente en el dataset.",
-        )
-        for col, (entity, val) in zip([k2, k3], totals_latest.items()):
-            col.metric(
-                f"Total BGLT — {entity}",
-                f"${val:,.1f} B COP",
-                help="Suma de todos los bonos BGLT en todos los fondos del AFP al último corte.",
+                "⚠️ **Protección** y **Skandia** no aparecen en esta tabla porque no reportan "
+                "tenencias de BGLT en el Formato 351 de la Superfinanciera. "
+                "Pueden tener posiciones en otros instrumentos de deuda pública."
             )
 
-        st.markdown("---")
 
-        # ── Chart 1: Holdings evolution over time ──────────────────────────
-        st.markdown("##### 📈 Evolución de Tenencias BGLT por AFP")
-        st.caption(
-            "Valor total de bonos BGLT en portafolio a precio de mercado, por mes. "
-            "Una tendencia al alza puede reflejar nuevas compras **o** apreciación del precio del bono. "
-            "Una caída puede indicar ventas, vencimientos o depreciación."
-        )
+    def _triangulate_with_bonds(
+        bond_df: pd.DataFrame,
+        buyers_df: pd.DataFrame,
+        sellers_df: pd.DataFrame,
+        tol_pct: float = 0.015,
+    ) -> list[dict]:
+        """
+        Identify high-confidence buyer→seller crosses by matching amounts.
 
-        evo = (
-            pf.groupby(["entidad", "fecha"])["valor_b_cop"]
-            .sum()
-            .reset_index()
-        )
-        evo["fecha_dt"] = evo["fecha"].dt.to_timestamp()
+        The desk's insight: when the monto a sector compró/vendió coincides
+        EXACTLY (within tolerance) with the monto of one or more specific bonds,
+        the cross can be identified with high confidence — no model needed.
 
-        evo_chart = (
-            alt.Chart(evo)
-            .mark_line(point=True, strokeWidth=2)
-            .encode(
-                x=alt.X("fecha_dt:T", title="Mes",
-                         axis=alt.Axis(format="%b %Y", labelAngle=-30)),
-                y=alt.Y("valor_b_cop:Q", title="Valor de Mercado (B COP)",
-                         axis=alt.Axis(format=",.1f")),
-                color=alt.Color("entidad:N", title="AFP"),
-                tooltip=[
-                    alt.Tooltip("fecha_dt:T",    title="Mes",        format="%Y-%m"),
-                    alt.Tooltip("entidad:N",      title="AFP"),
-                    alt.Tooltip("valor_b_cop:Q",  title="B COP",      format=",.2f"),
-                ],
-            )
-            .properties(height=340)
-            .interactive()
-        )
-        st.altair_chart(evo_chart, use_container_width=True)
+        Algorithm
+        ---------
+        1. Find (buyer, seller) pairs whose amounts match exactly (within tol_pct).
+        2. For each matching pair, find the bond subset whose montos sum to that amount.
+        3. Record confidence = 'alta' if bonds found, 'probable' if amounts match
+           but bonds can't be attributed (e.g. simultáneas inflating the sector total).
 
-        st.markdown("---")
+        BVC constraint: Extranjeros→Extranjeros is always excluded.
 
-        # ── Chart 2: Holdings by bond (latest cut-off) ────────────────────
-        st.markdown(f"##### 🔍 Composición por Bono — Corte {latest_str}")
-        st.caption(
-            "Qué bonos BGLT específicos tiene cada AFP. "
-            "Cada barra representa un nemotécnico distinto. "
-            "Útil para identificar preferencias de **duración**: BGLT con vencimiento lejano = mayor riesgo de tasa."
-        )
-
-        bond_breakdown = (
-            pf_latest.groupby(["entidad", "nemotecnico"])["valor_b_cop"]
-            .sum()
-            .reset_index()
-        )
-
-        bond_chart = (
-            alt.Chart(bond_breakdown)
-            .mark_bar()
-            .encode(
-                x=alt.X("valor_b_cop:Q", title="Valor de Mercado (B COP)",
-                         axis=alt.Axis(format=",.1f")),
-                y=alt.Y("entidad:N", title=None, sort="-x"),
-                color=alt.Color("nemotecnico:N", title="Bono BGLT"),
-                order=alt.Order("valor_b_cop:Q", sort="descending"),
-                tooltip=[
-                    alt.Tooltip("entidad:N",     title="AFP"),
-                    alt.Tooltip("nemotecnico:N",  title="Bono"),
-                    alt.Tooltip("valor_b_cop:Q",  title="B COP", format=",.2f"),
-                ],
-            )
-            .properties(height=200)
-        )
-        st.altair_chart(bond_chart, use_container_width=True)
-
-        st.markdown("---")
-
-        # ── Chart 3: Holdings by fund type ────────────────────────────────
-        st.markdown(f"##### 🗂️ Distribución por Tipo de Fondo — Corte {latest_str}")
-        st.caption(
-            "Los fondos **Moderado** y **Mayor Riesgo** concentran más BGLT (activos de mayor duración). "
-            "El fondo **Conservador** y **Cesantías** suelen tener menos riesgo de tasa."
-        )
-
-        fondo_breakdown = (
-            pf_latest.groupby(["entidad", "fondo"])["valor_b_cop"]
-            .sum()
-            .reset_index()
-        )
-
-        fondo_chart = (
-            alt.Chart(fondo_breakdown)
-            .mark_bar(cornerRadiusEnd=3)
-            .encode(
-                x=alt.X("valor_b_cop:Q", title="Valor de Mercado (B COP)",
-                         axis=alt.Axis(format=",.1f")),
-                y=alt.Y("fondo:N", title=None, sort="-x"),
-                color=alt.Color("entidad:N", title="AFP"),
-                tooltip=[
-                    alt.Tooltip("entidad:N",    title="AFP"),
-                    alt.Tooltip("fondo:N",       title="Tipo de fondo"),
-                    alt.Tooltip("valor_b_cop:Q", title="B COP", format=",.2f"),
-                ],
-            )
-            .properties(height=max(180, len(fondo_breakdown) * 35))
-        )
-        st.altair_chart(fondo_chart, use_container_width=True)
-
-        st.markdown("---")
-
-        # ── Detail table ───────────────────────────────────────────────────
-        st.markdown(f"##### 📋 Detalle por Bono y Fondo — Corte {latest_str}")
-        st.caption(
-            "Vista granular: cada fila es un bono BGLT específico dentro de un tipo de fondo. "
-            "Los valores están en **miles de millones de COP** (B COP = billones colombianos)."
-        )
-
-        detail = (
-            pf_latest.groupby(["entidad", "fondo", "nemotecnico"])["valor_b_cop"]
-            .sum()
-            .reset_index()
-            .sort_values(["entidad", "valor_b_cop"], ascending=[True, False])
-            .rename(columns={
-                "entidad":    "AFP",
-                "fondo":      "Tipo de Fondo",
-                "nemotecnico":"Bono",
-                "valor_b_cop":"Valor (B COP)",
-            })
-        )
-        st.dataframe(
-            detail,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Valor (B COP)": st.column_config.NumberColumn(format="%.2f"),
-            },
-        )
-        st.caption(
-            "⚠️ **Protección** y **Skandia** no aparecen en esta tabla porque no reportan "
-            "tenencias de BGLT en el Formato 351 de la Superfinanciera. "
-            "Pueden tener posiciones en otros instrumentos de deuda pública."
-        )
-
-
-def _triangulate_with_bonds(
-    bond_df: pd.DataFrame,
-    buyers_df: pd.DataFrame,
-    sellers_df: pd.DataFrame,
-    tol_pct: float = 0.015,
-) -> list[dict]:
-    """
-    Identify high-confidence buyer→seller crosses by matching amounts.
-
-    The desk's insight: when the monto a sector compró/vendió coincides
-    EXACTLY (within tolerance) with the monto of one or more specific bonds,
-    the cross can be identified with high confidence — no model needed.
-
-    Algorithm
-    ---------
-    1. Find (buyer, seller) pairs whose amounts match exactly (within tol_pct).
-    2. For each matching pair, find the bond subset whose montos sum to that amount.
-    3. Record confidence = 'alta' if bonds found, 'probable' if amounts match
-       but bonds can't be attributed (e.g. simultáneas inflating the sector total).
-
-    BVC constraint: Extranjeros→Extranjeros is always excluded.
-
-    Returns
-    -------
-    List of dicts ordered by monto descending:
-      buyer, seller, bonds (list of nemo), bond_vtos, monto, num_opes, confidence
-    """
-    # Parse bond montos from the pre-formatted string ("18,315" → 18315.0)
-    bonds: dict[str, float] = {}
-    bond_meta: dict[str, dict] = {}
-    for _, row in bond_df.iterrows():
-        nemo = str(row["Nemotécnico"])
-        try:
-            monto = float(str(row["CV Monto"]).replace(",", ""))
-        except (ValueError, TypeError):
-            continue
-        if monto > 0:
-            bonds[nemo] = monto
-            _opes = row.get("# Oper.", 0)
-            bond_meta[nemo] = {
-                "vto":      str(row.get("Vencimiento", "")),
-                "num_opes": int(_opes) if pd.notna(_opes) and _opes else 0,
-            }
-
-    active_b = {
-        str(r["Sector"]): float(r["Monto Comprado"])
-        for _, r in buyers_df.iterrows()
-        if float(r["Monto Comprado"]) > 0
-    }
-    active_s = {
-        str(r["Sector"]): float(r["Monto Vendido"])
-        for _, r in sellers_df.iterrows()
-        if float(r["Monto Vendido"]) > 0
-    }
-
-    if not bonds or not active_b or not active_s:
-        return []
-
-    ext = next((k for k in list(active_b) + list(active_s) if "extran" in k.lower()), None)
-
-    def _find_bonds(target: float) -> list[str] | None:
-        """Subset-sum: find bonds whose montos sum to target ± tolerance."""
-        tol = max(target * tol_pct, 3.0)
-        for size in range(1, min(len(bonds), 6) + 1):
-            for combo in _combinations(bonds.items(), size):
-                if abs(sum(v for _, v in combo) - target) <= tol:
-                    return [k for k, _ in combo]
-        return None
-
-    crosses: list[dict] = []
-    used_b: set[str] = set()
-    used_s: set[str] = set()
-
-    # Match largest amounts first — greedy, works well for small n
-    for buyer, b_amt in sorted(active_b.items(), key=lambda x: -x[1]):
-        for seller, s_amt in sorted(active_s.items(), key=lambda x: -x[1]):
-            if buyer in used_b or seller in used_s:
+        Returns
+        -------
+        List of dicts ordered by monto descending:
+          buyer, seller, bonds (list of nemo), bond_vtos, monto, num_opes, confidence
+        """
+        # Parse bond montos from the pre-formatted string ("18,315" → 18315.0)
+        bonds: dict[str, float] = {}
+        bond_meta: dict[str, dict] = {}
+        for _, row in bond_df.iterrows():
+            nemo = str(row["Nemotécnico"])
+            try:
+                monto = float(str(row["CV Monto"]).replace(",", ""))
+            except (ValueError, TypeError):
                 continue
-            if ext and buyer == ext and seller == ext:
-                continue  # BVC constraint
+            if monto > 0:
+                bonds[nemo] = monto
+                _opes = row.get("# Oper.", 0)
+                bond_meta[nemo] = {
+                    "vto":      str(row.get("Vencimiento", "")),
+                    "num_opes": int(_opes) if pd.notna(_opes) and _opes else 0,
+                }
 
-            tol = max(max(b_amt, s_amt) * tol_pct, 3.0)
-            if abs(b_amt - s_amt) > tol:
-                continue  # amounts don't match — not the same cross
+        active_b = {
+            str(r["Sector"]): float(r["Monto Comprado"])
+            for _, r in buyers_df.iterrows()
+            if float(r["Monto Comprado"]) > 0
+        }
+        active_s = {
+            str(r["Sector"]): float(r["Monto Vendido"])
+            for _, r in sellers_df.iterrows()
+            if float(r["Monto Vendido"]) > 0
+        }
 
-            matched = _find_bonds(b_amt)
-            num_opes = sum(bond_meta[b]["num_opes"] for b in matched) if matched else 0
-            vtos     = [bond_meta[b]["vto"][:7] for b in matched] if matched else []  # YYYY-MM
+        if not bonds or not active_b or not active_s:
+            return []
 
-            crosses.append({
-                "buyer":      buyer,
-                "seller":     seller,
-                "bonds":      matched or [],
-                "bond_vtos":  vtos,
-                "monto":      b_amt,
-                "num_opes":   num_opes,
-                "confidence": "alta" if matched else "probable",
-            })
-            used_b.add(buyer)
-            used_s.add(seller)
+        ext = next((k for k in list(active_b) + list(active_s) if "extran" in k.lower()), None)
 
-    return sorted(crosses, key=lambda x: -x["monto"])
+        def _find_bonds(target: float) -> list[str] | None:
+            """Subset-sum: find bonds whose montos sum to target ± tolerance."""
+            tol = max(target * tol_pct, 3.0)
+            for size in range(1, min(len(bonds), 6) + 1):
+                for combo in _combinations(bonds.items(), size):
+                    if abs(sum(v for _, v in combo) - target) <= tol:
+                        return [k for k, _ in combo]
+            return None
+
+        crosses: list[dict] = []
+        used_b: set[str] = set()
+        used_s: set[str] = set()
+
+        # Match largest amounts first — greedy, works well for small n
+        for buyer, b_amt in sorted(active_b.items(), key=lambda x: -x[1]):
+            for seller, s_amt in sorted(active_s.items(), key=lambda x: -x[1]):
+                if buyer in used_b or seller in used_s:
+                    continue
+                if ext and buyer == ext and seller == ext:
+                    continue  # BVC constraint
+
+                tol = max(max(b_amt, s_amt) * tol_pct, 3.0)
+                if abs(b_amt - s_amt) > tol:
+                    continue  # amounts don't match — not the same cross
+
+                matched = _find_bonds(b_amt)
+                num_opes = sum(bond_meta[b]["num_opes"] for b in matched) if matched else 0
+                vtos     = [bond_meta[b]["vto"][:7] for b in matched] if matched else []  # YYYY-MM
+
+                crosses.append({
+                    "buyer":      buyer,
+                    "seller":     seller,
+                    "bonds":      matched or [],
+                    "bond_vtos":  vtos,
+                    "monto":      b_amt,
+                    "num_opes":   num_opes,
+                    "confidence": "alta" if matched else "probable",
+                })
+                used_b.add(buyer)
+                used_s.add(seller)
+
+        return sorted(crosses, key=lambda x: -x["monto"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-with _safe_tab(tab_cross):
-    st.subheader("🔀 Triangulación — Cruces Probables entre Participantes")
-    st.info(
-        "**¿Qué es la triangulación?**  \n"
-        "El boletín BVC sólo muestra el *total* que cada sector compró y vendió, "
-        "no a quién le compró o vendió. Esta pestaña estima los cruces más probables "
-        "usando un **modelo proporcional**: si Pensiones compró el 45% del total y "
-        "Extranjeros vendió el 64%, el flujo estimado Pensiones←Extranjeros ≈ 45% × 64% × total.  \n\n"
-        "Los valores son **estimaciones estadísticas**, no operaciones confirmadas.",
-        icon="ℹ️",
-    )
-    st.warning(
-        "⚖️ **Restricción BVC aplicada:** Extranjeros → Extranjeros = **0**.  \n"
-        "Las operaciones entre dos entidades extranjeras no requieren registro local "
-        "y por tanto **no pueden aparecer** en el Boletín Diario BVC. "
-        "Sus ventas se redistribuyen sólo entre compradores locales.",
-        icon="⚠️",
-    )
-
-    # ── Bond-level exact-match triangulation ─────────────────────────────────
-    st.markdown(f"##### 🎯 Cruces Identificados — {chosen_date}")
-    st.caption(
-        "Cuando el monto que un sector **compró** coincide exactamente con el que otro sector "
-        "**vendió**, Y ese monto coincide con uno o más bonos específicos, el cruce puede "
-        "identificarse con **alta confianza** — sin necesidad de un modelo estadístico.  \n"
-        "Este es el mismo razonamiento que hace el escritorio manualmente."
-    )
-
-    crosses = _triangulate_with_bonds(bond_df, buyers_df, sellers_df)
-
-    if not crosses:
-        st.info("No se encontraron cruces con coincidencia exacta en esta sesión. "
-                "Ver modelo proporcional abajo.")
-    else:
-        # Build display table
-        rows_display = []
-        for c in crosses:
-            bond_str = "  +  ".join(c["bonds"]) if c["bonds"] else "—"
-            vto_str  = "  /  ".join(c["bond_vtos"]) if c["bond_vtos"] else "—"
-            short_b  = c["buyer"].split("/")[0].strip()
-            short_s  = c["seller"].split("/")[0].strip()
-            conf_str = "🟢 Alta" if c["confidence"] == "alta" else "🟡 Probable"
-            rows_display.append({
-                "Vendedor":      short_s,
-                "Comprador":     short_b,
-                "Bono(s)":       bond_str,
-                "Vencimiento(s)":vto_str,
-                "Monto (M COP)": f"{c['monto']:,.0f}",
-                "# Opes":        str(c["num_opes"]) if c["num_opes"] > 0 else "—",
-                "Confianza":     conf_str,
-            })
-
-        st.dataframe(
-            pd.DataFrame(rows_display),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
-                "# Opes":        st.column_config.TextColumn("# Opes"),
-                "Confianza":     st.column_config.TextColumn("Confianza"),
-            },
+    # ─────────────────────────────────────────────────────────────────────────────
+    with _safe_tab(tab_cross):
+        st.subheader("🔀 Triangulación — Cruces Probables entre Participantes")
+        st.info(
+            "**¿Qué es la triangulación?**  \n"
+            "El boletín BVC sólo muestra el *total* que cada sector compró y vendió, "
+            "no a quién le compró o vendió. Esta pestaña estima los cruces más probables "
+            "usando un **modelo proporcional**: si Pensiones compró el 45% del total y "
+            "Extranjeros vendió el 64%, el flujo estimado Pensiones←Extranjeros ≈ 45% × 64% × total.  \n\n"
+            "Los valores son **estimaciones estadísticas**, no operaciones confirmadas.",
+            icon="ℹ️",
         )
+        st.warning(
+            "⚖️ **Restricción BVC aplicada:** Extranjeros → Extranjeros = **0**.  \n"
+            "Las operaciones entre dos entidades extranjeras no requieren registro local "
+            "y por tanto **no pueden aparecer** en el Boletín Diario BVC. "
+            "Sus ventas se redistribuyen sólo entre compradores locales.",
+            icon="⚠️",
+        )
+
+        # ── Bond-level exact-match triangulation ─────────────────────────────────
+        st.markdown(f"##### 🎯 Cruces Identificados — {chosen_date}")
         st.caption(
-            "**Cómo leer la tabla:** cada fila representa un cruce estimado. "
-            "'Alta confianza' significa que los montos del sector Y del bono coinciden "
-            "dentro del 1.5% de tolerancia (diferencias de redondeo del BVC). "
-            "Los bonos listados son los que **más probablemente** se negociaron en ese cruce."
+            "Cuando el monto que un sector **compró** coincide exactamente con el que otro sector "
+            "**vendió**, Y ese monto coincide con uno o más bonos específicos, el cruce puede "
+            "identificarse con **alta confianza** — sin necesidad de un modelo estadístico.  \n"
+            "Este es el mismo razonamiento que hace el escritorio manualmente."
         )
 
-    st.markdown("---")
+        crosses = _triangulate_with_bonds(bond_df, buyers_df, sellers_df)
 
-    # ── Aggregate flow matrix (proportional model) ────────────────────────────
-    st.markdown(f"##### 📊 Modelo Proporcional — Matriz de Flujos ({chosen_date})")
-    st.caption(
-        "Vista complementaria: cuando los montos NO coinciden exactamente (varios compradores "
-        "y vendedores con montos distintos), el modelo proporcional estima los flujos más "
-        "probables. Filas = comprador · Columnas = vendedor · Valores en M COP."
-    )
+        if not crosses:
+            st.info("No se encontraron cruces con coincidencia exacta en esta sesión. "
+                    "Ver modelo proporcional abajo.")
+        else:
+            # Build display table
+            rows_display = []
+            for c in crosses:
+                bond_str = "  +  ".join(c["bonds"]) if c["bonds"] else "—"
+                vto_str  = "  /  ".join(c["bond_vtos"]) if c["bond_vtos"] else "—"
+                short_b  = c["buyer"].split("/")[0].strip()
+                short_s  = c["seller"].split("/")[0].strip()
+                conf_str = "🟢 Alta" if c["confidence"] == "alta" else "🟡 Probable"
+                rows_display.append({
+                    "Vendedor":      short_s,
+                    "Comprador":     short_b,
+                    "Bono(s)":       bond_str,
+                    "Vencimiento(s)":vto_str,
+                    "Monto (M COP)": f"{c['monto']:,.0f}",
+                    "# Opes":        str(c["num_opes"]) if c["num_opes"] > 0 else "—",
+                    "Confianza":     conf_str,
+                })
 
-    # Shorten sector names for chart readability
-    def _shorten(name: str) -> str:
-        return name.split("/")[0].strip()
-
-    buyers_short  = buyers_df.copy()
-    sellers_short = sellers_df.copy()
-    buyers_short["Sector"]  = buyers_short["Sector"].apply(_shorten)
-    sellers_short["Sector"] = sellers_short["Sector"].apply(_shorten)
-
-    fm = _flow_matrix(buyers_short, sellers_short)
-
-    if fm.empty:
-        st.info("Sin datos de flujos para esta sesión.")
-    else:
-        # Melt for Altair heatmap
-        fm_long = (
-            fm.reset_index()
-            .rename(columns={"index": "Comprador"})
-            .melt(id_vars="Comprador", var_name="Vendedor", value_name="Flujo")
-        )
-
-        heatmap = (
-            alt.Chart(fm_long)
-            .mark_rect()
-            .encode(
-                x=alt.X("Vendedor:N",   title="Vendedor",   sort=None),
-                y=alt.Y("Comprador:N",  title="Comprador",  sort=None),
-                color=alt.Color(
-                    "Flujo:Q",
-                    title="M COP",
-                    scale=alt.Scale(scheme="blues"),
-                    legend=alt.Legend(format=",.0f"),
-                ),
-                tooltip=[
-                    alt.Tooltip("Comprador:N"),
-                    alt.Tooltip("Vendedor:N"),
-                    alt.Tooltip("Flujo:Q", title="Flujo estimado (M COP)", format=",.0f"),
-                ],
+            st.dataframe(
+                pd.DataFrame(rows_display),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
+                    "# Opes":        st.column_config.TextColumn("# Opes"),
+                    "Confianza":     st.column_config.TextColumn("Confianza"),
+                },
             )
-            .properties(height=max(200, len(fm) * 55))
-        )
-        # Overlay value labels
-        text = heatmap.mark_text(color="white", fontSize=11, fontWeight="bold").encode(
-            text=alt.Text("Flujo:Q", format=",.0f"),
-            color=alt.condition(
-                alt.datum.Flujo > fm.values.max() * 0.5,
-                alt.value("white"),
-                alt.value("#333"),
-            ),
-        )
-        st.altair_chart(heatmap + text, use_container_width=True)
+            st.caption(
+                "**Cómo leer la tabla:** cada fila representa un cruce estimado. "
+                "'Alta confianza' significa que los montos del sector Y del bono coinciden "
+                "dentro del 1.5% de tolerancia (diferencias de redondeo del BVC). "
+                "Los bonos listados son los que **más probablemente** se negociaron en ese cruce."
+            )
 
         st.markdown("---")
 
-        # ── Top probable crosses (ranked list) ───────────────────────────────
-        st.markdown("##### 🏆 Cruces Más Probables — Sesión Seleccionada")
+        # ── Aggregate flow matrix (proportional model) ────────────────────────────
+        st.markdown(f"##### 📊 Modelo Proporcional — Matriz de Flujos ({chosen_date})")
         st.caption(
-            "Pares comprador–vendedor ordenados por flujo estimado. "
-            "Este ranking indica qué cruce es más probable, no cuál ocurrió exactamente."
+            "Vista complementaria: cuando los montos NO coinciden exactamente (varios compradores "
+            "y vendedores con montos distintos), el modelo proporcional estima los flujos más "
+            "probables. Filas = comprador · Columnas = vendedor · Valores en M COP."
         )
 
-        top_crosses = (
-            fm_long[fm_long["Flujo"] > 0]
-            .sort_values("Flujo", ascending=False)
-            .reset_index(drop=True)
-        )
-        top_crosses.index += 1  # start ranking at 1
-        top_crosses["Flujo"] = top_crosses["Flujo"].apply(lambda x: f"{x:,.0f}")
-        top_crosses.columns = ["Comprador", "Vendedor", "Flujo Est. (M COP)"]
-        st.dataframe(top_crosses, use_container_width=True,
-                     column_config={"Flujo Est. (M COP)": st.column_config.TextColumn()})
+        # Shorten sector names for chart readability
+        def _shorten(name: str) -> str:
+            return name.split("/")[0].strip()
 
-    st.markdown("---")
+        buyers_short  = buyers_df.copy()
+        sellers_short = sellers_df.copy()
+        buyers_short["Sector"]  = buyers_short["Sector"].apply(_shorten)
+        sellers_short["Sector"] = sellers_short["Sector"].apply(_shorten)
 
-    # ── Historical average flow matrix ────────────────────────────────────────
-    st.markdown("##### 📅 Patrón Histórico — Flujo Promedio por Sesión")
-    st.caption(
-        "Promedio de los flujos estimados en todas las sesiones disponibles. "
-        "Revela los **cruces estructurales**: parejas que se repiten consistentemente "
-        "independientemente del día."
-    )
+        fm = _flow_matrix(buyers_short, sellers_short)
 
-    with st.spinner("Calculando patrones históricos..."):
-        cross_hist = _build_cross_history(tuple(sorted(history_files.items())))
+        if fm.empty:
+            st.info("Sin datos de flujos para esta sesión.")
+        else:
+            # Melt for Altair heatmap
+            fm_long = (
+                fm.reset_index()
+                .rename(columns={"index": "Comprador"})
+                .melt(id_vars="Comprador", var_name="Vendedor", value_name="Flujo")
+            )
 
-    if cross_hist.empty:
-        st.info("No hay suficiente historial para calcular patrones.")
-    else:
-        # Shorten sector names for historical data
-        cross_hist = cross_hist.copy()
-        cross_hist["buyer_s"]  = cross_hist["buyer"].apply(_shorten)
-        cross_hist["seller_s"] = cross_hist["seller"].apply(_shorten)
-
-        # Average flow per pair across sessions
-        avg_flows = (
-            cross_hist.groupby(["buyer_s", "seller_s"])["flujo"]
-            .mean()
-            .reset_index()
-            .rename(columns={"buyer_s": "Comprador", "seller_s": "Vendedor",
-                             "flujo": "Flujo Promedio"})
-        )
-        n_sessions = cross_hist["date"].nunique()
-        st.caption(f"Basado en {n_sessions} sesión(es) con negociaciones de BGLT.")
-
-        hist_heatmap = (
-            alt.Chart(avg_flows)
-            .mark_rect()
-            .encode(
-                x=alt.X("Vendedor:N",   title="Vendedor",  sort=None),
-                y=alt.Y("Comprador:N",  title="Comprador", sort=None),
-                color=alt.Color(
-                    "Flujo Promedio:Q",
-                    title="M COP (prom.)",
-                    scale=alt.Scale(scheme="oranges"),
-                    legend=alt.Legend(format=",.0f"),
+            heatmap = (
+                alt.Chart(fm_long)
+                .mark_rect()
+                .encode(
+                    x=alt.X("Vendedor:N",   title="Vendedor",   sort=None),
+                    y=alt.Y("Comprador:N",  title="Comprador",  sort=None),
+                    color=alt.Color(
+                        "Flujo:Q",
+                        title="M COP",
+                        scale=alt.Scale(scheme="blues"),
+                        legend=alt.Legend(format=",.0f"),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Comprador:N"),
+                        alt.Tooltip("Vendedor:N"),
+                        alt.Tooltip("Flujo:Q", title="Flujo estimado (M COP)", format=",.0f"),
+                    ],
+                )
+                .properties(height=max(200, len(fm) * 55))
+            )
+            # Overlay value labels
+            text = heatmap.mark_text(color="white", fontSize=11, fontWeight="bold").encode(
+                text=alt.Text("Flujo:Q", format=",.0f"),
+                color=alt.condition(
+                    alt.datum.Flujo > fm.values.max() * 0.5,
+                    alt.value("white"),
+                    alt.value("#333"),
                 ),
-                tooltip=[
-                    alt.Tooltip("Comprador:N"),
-                    alt.Tooltip("Vendedor:N"),
-                    alt.Tooltip("Flujo Promedio:Q", title="Flujo prom. (M COP)",
-                                format=",.0f"),
-                ],
             )
-            .properties(height=max(200, avg_flows["Comprador"].nunique() * 55))
-        )
-        hist_text = hist_heatmap.mark_text(fontSize=10, fontWeight="bold").encode(
-            text=alt.Text("Flujo Promedio:Q", format=",.0f"),
-            color=alt.condition(
-                alt.datum["Flujo Promedio"] > avg_flows["Flujo Promedio"].max() * 0.5,
-                alt.value("white"),
-                alt.value("#333"),
-            ),
-        )
-        st.altair_chart(hist_heatmap + hist_text, use_container_width=True)
+            st.altair_chart(heatmap + text, use_container_width=True)
 
-        # ── Dominant pairs (consistency score) ───────────────────────────
-        st.markdown("##### 🔁 Cruces Consistentes en el Tiempo")
+            st.markdown("---")
+
+            # ── Top probable crosses (ranked list) ───────────────────────────────
+            st.markdown("##### 🏆 Cruces Más Probables — Sesión Seleccionada")
+            st.caption(
+                "Pares comprador–vendedor ordenados por flujo estimado. "
+                "Este ranking indica qué cruce es más probable, no cuál ocurrió exactamente."
+            )
+
+            top_crosses = (
+                fm_long[fm_long["Flujo"] > 0]
+                .sort_values("Flujo", ascending=False)
+                .reset_index(drop=True)
+            )
+            top_crosses.index += 1  # start ranking at 1
+            top_crosses["Flujo"] = top_crosses["Flujo"].apply(lambda x: f"{x:,.0f}")
+            top_crosses.columns = ["Comprador", "Vendedor", "Flujo Est. (M COP)"]
+            st.dataframe(top_crosses, use_container_width=True,
+                         column_config={"Flujo Est. (M COP)": st.column_config.TextColumn()})
+
+        st.markdown("---")
+
+        # ── Historical average flow matrix ────────────────────────────────────────
+        st.markdown("##### 📅 Patrón Histórico — Flujo Promedio por Sesión")
         st.caption(
-            "Pares que aparecen en el mayor número de sesiones. "
-            "Alta frecuencia = cruce estructural (no oportunístico)."
+            "Promedio de los flujos estimados en todas las sesiones disponibles. "
+            "Revela los **cruces estructurales**: parejas que se repiten consistentemente "
+            "independientemente del día."
         )
 
-        consistency = (
-            cross_hist[cross_hist["flujo"] > 0]
-            .groupby(["buyer_s", "seller_s"])
-            .agg(
-                sesiones=("date", "nunique"),
-                flujo_prom=("flujo", "mean"),
-                flujo_total=("flujo", "sum"),
+        with st.spinner("Calculando patrones históricos..."):
+            cross_hist = _build_cross_history(tuple(sorted(history_files.items())))
+
+        if cross_hist.empty:
+            st.info("No hay suficiente historial para calcular patrones.")
+        else:
+            # Shorten sector names for historical data
+            cross_hist = cross_hist.copy()
+            cross_hist["buyer_s"]  = cross_hist["buyer"].apply(_shorten)
+            cross_hist["seller_s"] = cross_hist["seller"].apply(_shorten)
+
+            # Average flow per pair across sessions
+            avg_flows = (
+                cross_hist.groupby(["buyer_s", "seller_s"])["flujo"]
+                .mean()
+                .reset_index()
+                .rename(columns={"buyer_s": "Comprador", "seller_s": "Vendedor",
+                                 "flujo": "Flujo Promedio"})
             )
-            .reset_index()
-            .sort_values("sesiones", ascending=False)
-            .rename(columns={
-                "buyer_s":    "Comprador",
-                "seller_s":   "Vendedor",
-                "sesiones":   "# Sesiones",
-                "flujo_prom": "Flujo Prom (M COP)",
-                "flujo_total":"Flujo Total (M COP)",
-            })
-            .reset_index(drop=True)
-        )
-        consistency.index += 1
-        # Pre-format numeric columns as strings to avoid Arrow mixed-type issues
-        consistency["Flujo Prom (M COP)"]  = consistency["Flujo Prom (M COP)"].apply(lambda x: f"{x:,.0f}")
-        consistency["Flujo Total (M COP)"] = consistency["Flujo Total (M COP)"].apply(lambda x: f"{x:,.0f}")
-        st.dataframe(
-            consistency,
-            use_container_width=True,
-            hide_index=False,
-            column_config={
-                "Flujo Prom (M COP)":  st.column_config.TextColumn("Flujo Prom (M COP)"),
-                "Flujo Total (M COP)": st.column_config.TextColumn("Flujo Total (M COP)"),
-            },
-        )
+            n_sessions = cross_hist["date"].nunique()
+            st.caption(f"Basado en {n_sessions} sesión(es) con negociaciones de BGLT.")
+
+            hist_heatmap = (
+                alt.Chart(avg_flows)
+                .mark_rect()
+                .encode(
+                    x=alt.X("Vendedor:N",   title="Vendedor",  sort=None),
+                    y=alt.Y("Comprador:N",  title="Comprador", sort=None),
+                    color=alt.Color(
+                        "Flujo Promedio:Q",
+                        title="M COP (prom.)",
+                        scale=alt.Scale(scheme="oranges"),
+                        legend=alt.Legend(format=",.0f"),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Comprador:N"),
+                        alt.Tooltip("Vendedor:N"),
+                        alt.Tooltip("Flujo Promedio:Q", title="Flujo prom. (M COP)",
+                                    format=",.0f"),
+                    ],
+                )
+                .properties(height=max(200, avg_flows["Comprador"].nunique() * 55))
+            )
+            hist_text = hist_heatmap.mark_text(fontSize=10, fontWeight="bold").encode(
+                text=alt.Text("Flujo Promedio:Q", format=",.0f"),
+                color=alt.condition(
+                    alt.datum["Flujo Promedio"] > avg_flows["Flujo Promedio"].max() * 0.5,
+                    alt.value("white"),
+                    alt.value("#333"),
+                ),
+            )
+            st.altair_chart(hist_heatmap + hist_text, use_container_width=True)
+
+            # ── Dominant pairs (consistency score) ───────────────────────────
+            st.markdown("##### 🔁 Cruces Consistentes en el Tiempo")
+            st.caption(
+                "Pares que aparecen en el mayor número de sesiones. "
+                "Alta frecuencia = cruce estructural (no oportunístico)."
+            )
+
+            consistency = (
+                cross_hist[cross_hist["flujo"] > 0]
+                .groupby(["buyer_s", "seller_s"])
+                .agg(
+                    sesiones=("date", "nunique"),
+                    flujo_prom=("flujo", "mean"),
+                    flujo_total=("flujo", "sum"),
+                )
+                .reset_index()
+                .sort_values("sesiones", ascending=False)
+                .rename(columns={
+                    "buyer_s":    "Comprador",
+                    "seller_s":   "Vendedor",
+                    "sesiones":   "# Sesiones",
+                    "flujo_prom": "Flujo Prom (M COP)",
+                    "flujo_total":"Flujo Total (M COP)",
+                })
+                .reset_index(drop=True)
+            )
+            consistency.index += 1
+            # Pre-format numeric columns as strings to avoid Arrow mixed-type issues
+            consistency["Flujo Prom (M COP)"]  = consistency["Flujo Prom (M COP)"].apply(lambda x: f"{x:,.0f}")
+            consistency["Flujo Total (M COP)"] = consistency["Flujo Total (M COP)"].apply(lambda x: f"{x:,.0f}")
+            st.dataframe(
+                consistency,
+                use_container_width=True,
+                hide_index=False,
+                column_config={
+                    "Flujo Prom (M COP)":  st.column_config.TextColumn("Flujo Prom (M COP)"),
+                    "Flujo Total (M COP)": st.column_config.TextColumn("Flujo Total (M COP)"),
+                },
+            )
+
+
+# ── Top-level runner ─────────────────────────────────────────────────────────
+try:
+    _main()
+except Exception as _top_exc:
+    import traceback as _tb
+    st.error(f'⚠️ **App error** ({type(_top_exc).__name__}): {_top_exc}')
+    st.code(_tb.format_exc(), language='python')
