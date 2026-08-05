@@ -688,13 +688,41 @@ with tab_hist:
         )
         pivot.columns = [d.strftime("%d/%m") for d in pivot.columns]
         pivot.index.name = "Sector"
-        abs_max = float(pivot.abs().max().max()) or 1.0
-        st.dataframe(
-            pivot.style
-            .background_gradient(cmap="RdYlGn", axis=None, vmin=-abs_max, vmax=abs_max)
-            .format("{:,.0f}"),
-            use_container_width=True,
+
+        # Altair heatmap — interactive, no matplotlib dependency
+        pivot_long = (
+            pivot.reset_index()
+            .melt(id_vars="Sector", var_name="Fecha", value_name="Neto")
         )
+        abs_max = float(pivot_long["Neto"].abs().max()) or 1.0
+        heat = (
+            alt.Chart(pivot_long)
+            .mark_rect()
+            .encode(
+                x=alt.X("Fecha:N", sort=pivot.columns.tolist(), title=None),
+                y=alt.Y("Sector:N", title=None),
+                color=alt.Color(
+                    "Neto:Q",
+                    scale=alt.Scale(scheme="redyellowgreen", domainMid=0,
+                                    domain=[-abs_max, abs_max]),
+                    title="M COP",
+                ),
+                tooltip=[
+                    alt.Tooltip("Sector:N"),
+                    alt.Tooltip("Fecha:N"),
+                    alt.Tooltip("Neto:Q", title="Pos. Neta (M COP)", format=",.0f"),
+                ],
+            )
+            .properties(height=max(180, pivot.shape[0] * 45))
+        )
+        heat_text = heat.mark_text(fontSize=10).encode(
+            text=alt.Text("Neto:Q", format=",.0f"),
+            color=alt.condition(
+                alt.datum.Neto > abs_max * 0.4,
+                alt.value("white"), alt.value("#333")
+            ),
+        )
+        st.altair_chart(heat + heat_text, use_container_width=True)
 
         st.markdown("---")
 
