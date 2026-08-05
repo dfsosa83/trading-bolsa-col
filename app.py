@@ -1125,9 +1125,10 @@ def _triangulate_with_bonds(
             continue
         if monto > 0:
             bonds[nemo] = monto
+            _opes = row.get("# Oper.", 0)
             bond_meta[nemo] = {
                 "vto":      str(row.get("Vencimiento", "")),
-                "num_opes": int(row.get("# Oper.", 0) or 0),
+                "num_opes": int(_opes) if pd.notna(_opes) and _opes else 0,
             }
 
     active_b = {
