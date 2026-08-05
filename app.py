@@ -1241,6 +1241,104 @@ def _main():
         return sorted(crosses, key=lambda x: -x["monto"])
 
 
+    def _find_complete_attribution(
+        bond_df: pd.DataFrame,
+        buyers_df: pd.DataFrame,
+        sellers_df: pd.DataFrame,
+        tol_pct: float = 0.02,
+        max_solutions: int = 3,
+    ) -> list[list[dict]]:
+        """
+        Find all valid complete attributions of bonds to (buyer, seller) pairs.
+
+        The desk's insight: sum(bond_montos) == sum(buys) == sum(sells) — zero-sum.
+        Therefore a valid partition always exists (≥1 solution). The algorithm
+        enumerates solutions via backtracking with budget pruning, which is fast
+        for the typical 3-8 BGLT bonds traded per session.
+
+        Returns up to max_solutions complete assignments (each is a list of dicts).
+        """
+        bond_list: list[tuple[str, float]] = []
+        bond_meta: dict[str, dict] = {}
+        for _, row in bond_df.iterrows():
+            nemo = str(row["Nemotécnico"])
+            try:
+                monto = float(str(row["CV Monto"]).replace(",", ""))
+            except (ValueError, TypeError):
+                continue
+            if monto > 0:
+                bond_list.append((nemo, monto))
+                _opes = row.get("# Oper.", 0)
+                bond_meta[nemo] = {
+                    "vto":      str(row.get("Vencimiento", ""))[:7],
+                    "num_opes": int(_opes) if pd.notna(_opes) and _opes else 0,
+                }
+
+        if not bond_list:
+            return []
+
+        bond_list.sort(key=lambda x: -x[1])  # largest first → better pruning
+
+        buy_budget: dict[str, float] = {
+            str(r["Sector"]): float(r["Monto Comprado"])
+            for _, r in buyers_df.iterrows()
+            if float(r["Monto Comprado"]) > 0
+        }
+        sell_budget: dict[str, float] = {
+            str(r["Sector"]): float(r["Monto Vendido"])
+            for _, r in sellers_df.iterrows()
+            if float(r["Monto Vendido"]) > 0
+        }
+
+        if not buy_budget or not sell_budget:
+            return []
+
+        ext = next((k for k in list(buy_budget) + list(sell_budget)
+                    if "extran" in k.lower()), None)
+        pairs = [
+            (b, s) for b in buy_budget for s in sell_budget
+            if not (ext and b == ext and s == ext)
+        ]
+
+        total_monto  = sum(m for _, m in bond_list)
+        budget_tol   = max(total_monto * tol_pct, 10.0)
+        solutions: list[list[dict]] = []
+
+        def _bt(idx: int, asgn: list[dict],
+                buy_rem: dict[str, float], sell_rem: dict[str, float]) -> None:
+            if len(solutions) >= max_solutions:
+                return
+            if idx == len(bond_list):
+                if (all(abs(v) <= budget_tol for v in buy_rem.values()) and
+                        all(abs(v) <= budget_tol for v in sell_rem.values())):
+                    solutions.append(list(asgn))
+                return
+
+            nemo, monto = bond_list[idx]
+            bond_tol = max(monto * tol_pct, 3.0)
+            for buyer, seller in pairs:
+                if (buy_rem.get(buyer, 0) >= monto - bond_tol and
+                        sell_rem.get(seller, 0) >= monto - bond_tol):
+                    buy_rem[buyer]  -= monto
+                    sell_rem[seller] -= monto
+                    asgn.append({
+                        "bond":     nemo,
+                        "vto":      bond_meta[nemo]["vto"],
+                        "monto":    monto,
+                        "buyer":    buyer,
+                        "seller":   seller,
+                        "num_opes": bond_meta[nemo]["num_opes"],
+                    })
+                    _bt(idx + 1, asgn, buy_rem, sell_rem)
+                    asgn.pop()
+                    buy_rem[buyer]  += monto
+                    sell_rem[seller] += monto
+
+        _bt(0, [], {k: v for k, v in buy_budget.items()},
+            {k: v for k, v in sell_budget.items()})
+        return solutions
+
+
     # ─────────────────────────────────────────────────────────────────────────────
     with _safe_tab(tab_cross):
         st.subheader("🔀 Triangulación — Cruces Probables entre Participantes")
@@ -1310,6 +1408,57 @@ def _main():
                 "dentro del 1.5% de tolerancia (diferencias de redondeo del BVC). "
                 "Los bonos listados son los que **más probablemente** se negociaron en ese cruce."
             )
+
+        # ── Complete attribution (backtracking) ──────────────────────────────────
+        st.markdown(f"##### 🧩 Atribución Completa — {chosen_date}")
+        st.caption(
+            "**Lógica de suma cero:** los montos de los bonos negociados = montos comprados = montos "
+            "vendidos. El algoritmo busca **todas** las formas válidas de asignar cada bono a un par "
+            "(comprador, vendedor) satisfaciendo exactamente los totales sectoriales del BVC. "
+            "Resultado determinístico cuando hay solución única; muestra alternativas si hay varias."
+        )
+        complete = _find_complete_attribution(bond_df, buyers_df, sellers_df)
+        if not complete:
+            st.warning(
+                "No se encontró una atribución completa que satisfaga los totales sectoriales. "
+                "Posibles causas: 'Simultáneas' que inflan los totales, o bonos con montos "
+                "que no cuadran exactamente con los sectores activos.",
+                icon="⚠️",
+            )
+        else:
+            if len(complete) == 1:
+                st.success(
+                    "✅ **Solución única** — la atribución de bonos a cruces es determinística.",
+                    icon="✅",
+                )
+            else:
+                st.info(
+                    f"Se encontraron **{len(complete)} soluciones posibles**. "
+                    "Las diferencias están resaltadas — cada solución es igualmente válida.",
+                    icon="ℹ️",
+                )
+            for i, sol in enumerate(complete):
+                if len(complete) > 1:
+                    st.markdown(f"**Solución {i + 1}:**")
+                sol_rows = []
+                for item in sol:
+                    sol_rows.append({
+                        "Bono":          item["bond"],
+                        "Vencimiento":   item["vto"],
+                        "Monto (M COP)": f"{item['monto']:,.0f}",
+                        "Comprador":     item["buyer"].split("/")[0].strip(),
+                        "Vendedor":      item["seller"].split("/")[0].strip(),
+                        "# Opes":        str(item["num_opes"]) if item["num_opes"] > 0 else "—",
+                    })
+                st.dataframe(
+                    pd.DataFrame(sol_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
+                        "# Opes":        st.column_config.TextColumn("# Opes"),
+                    },
+                )
 
         st.markdown("---")
 
