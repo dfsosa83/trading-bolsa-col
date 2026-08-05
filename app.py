@@ -1255,13 +1255,12 @@ def _main():
         Find all valid complete attributions of bonds to (buyer, seller) pairs.
 
         The desk's insight: sum(bond_montos) == sum(buys) == sum(sells) — zero-sum.
-        Therefore a valid partition always exists (≥1 solution). The algorithm
-        enumerates solutions via backtracking with budget pruning, which is fast
-        for the typical 3-8 BGLT bonds traded per session.
+        For bonds with # Oper. >= 2, also tries splitting into 2 sub-transactions
+        (like BGLT32180141 "1 de 2 op." / "2 de 2 op." in the desk's manual table).
 
         Returns up to max_solutions complete assignments (each is a list of dicts).
         """
-        bond_list: list[tuple[str, float]] = []
+        bond_list: list[tuple[str, float, int]] = []  # (nemo, monto, num_opes)
         bond_meta: dict[str, dict] = {}
         for _, row in bond_df.iterrows():
             nemo = str(row["Nemotécnico"])
@@ -1272,11 +1271,12 @@ def _main():
             except (ValueError, TypeError):
                 continue
             if monto > 0:
-                bond_list.append((nemo, monto))
                 _opes = row.get("# Oper.", 0)
+                num_ops = int(_opes) if pd.notna(_opes) and _opes else 1
+                bond_list.append((nemo, monto, num_ops))
                 bond_meta[nemo] = {
                     "vto":      str(row.get("Vencimiento", ""))[:7],
-                    "num_opes": int(_opes) if pd.notna(_opes) and _opes else 0,
+                    "num_opes": num_ops,
                 }
 
         if not bond_list:
@@ -1305,7 +1305,7 @@ def _main():
             if not (ext and b == ext and s == ext)
         ]
 
-        total_monto  = sum(m for _, m in bond_list)
+        total_monto  = sum(m for _, m, _ in bond_list)
         budget_tol   = max(total_monto * tol_pct, 10.0)
         solutions: list[list[dict]] = []
 
@@ -1319,12 +1319,14 @@ def _main():
                     solutions.append(list(asgn))
                 return
 
-            nemo, monto = bond_list[idx]
+            nemo, monto, num_ops = bond_list[idx]
             bond_tol = max(monto * tol_pct, 3.0)
+
+            # Option A: assign whole bond to one (buyer, seller) pair
             for buyer, seller in pairs:
                 if (buy_rem.get(buyer, 0) >= monto - bond_tol and
                         sell_rem.get(seller, 0) >= monto - bond_tol):
-                    buy_rem[buyer]  -= monto
+                    buy_rem[buyer]   -= monto
                     sell_rem[seller] -= monto
                     asgn.append({
                         "bond":     nemo,
@@ -1332,12 +1334,45 @@ def _main():
                         "monto":    monto,
                         "buyer":    buyer,
                         "seller":   seller,
-                        "num_opes": bond_meta[nemo]["num_opes"],
+                        "num_opes": num_ops,
+                        "label":    "",
                     })
                     _bt(idx + 1, asgn, buy_rem, sell_rem)
                     asgn.pop()
-                    buy_rem[buyer]  += monto
+                    buy_rem[buyer]   += monto
                     sell_rem[seller] += monto
+
+            # Option B: split into 2 halves (only when # Oper. >= 2)
+            # Mirrors the desk's "1 de 2 op." / "2 de 2 op." labelling.
+            if num_ops >= 2:
+                h1 = round(monto / 2)
+                h2 = monto - h1
+                h_tol = max(h1 * tol_pct, 3.0)
+                for b1, s1 in pairs:
+                    if not (buy_rem.get(b1, 0) >= h1 - h_tol and
+                            sell_rem.get(s1, 0) >= h1 - h_tol):
+                        continue
+                    buy_rem[b1]  -= h1
+                    sell_rem[s1] -= h1
+                    for b2, s2 in pairs:
+                        if (b2, s2) == (b1, s1):
+                            continue  # must be a different pair
+                        if (buy_rem.get(b2, 0) >= h2 - h_tol and
+                                sell_rem.get(s2, 0) >= h2 - h_tol):
+                            buy_rem[b2]  -= h2
+                            sell_rem[s2] -= h2
+                            asgn.append({"bond": nemo, "vto": bond_meta[nemo]["vto"],
+                                         "monto": h1, "buyer": b1, "seller": s1,
+                                         "num_opes": 1, "label": "1 de 2 op."})
+                            asgn.append({"bond": nemo, "vto": bond_meta[nemo]["vto"],
+                                         "monto": h2, "buyer": b2, "seller": s2,
+                                         "num_opes": 1, "label": "2 de 2 op."})
+                            _bt(idx + 1, asgn, buy_rem, sell_rem)
+                            asgn.pop(); asgn.pop()
+                            buy_rem[b2]  += h2
+                            sell_rem[s2] += h2
+                    buy_rem[b1]  += h1
+                    sell_rem[s1] += h1
 
         _bt(0, [], {k: v for k, v in buy_budget.items()},
             {k: v for k, v in sell_budget.items()})
@@ -1458,13 +1493,15 @@ def _main():
                     st.markdown(f"**Solución {i + 1}:**")
                 sol_rows = []
                 for item in sol:
+                    bono_label = item["bond"]
+                    if item.get("label"):
+                        bono_label += f" ({item['label']})"
                     sol_rows.append({
-                        "Bono":          item["bond"],
+                        "Vendedor":      item["seller"].split("/")[0].strip(),
+                        "Comprador":     item["buyer"].split("/")[0].strip(),
+                        "Bono":          bono_label,
                         "Vencimiento":   item["vto"],
                         "Monto (M COP)": f"{item['monto']:,.0f}",
-                        "Comprador":     item["buyer"].split("/")[0].strip(),
-                        "Vendedor":      item["seller"].split("/")[0].strip(),
-                        "# Opes":        str(item["num_opes"]) if item["num_opes"] > 0 else "—",
                     })
                 st.dataframe(
                     pd.DataFrame(sol_rows),
@@ -1472,7 +1509,6 @@ def _main():
                     hide_index=True,
                     column_config={
                         "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
-                        "# Opes":        st.column_config.TextColumn("# Opes"),
                     },
                 )
 
