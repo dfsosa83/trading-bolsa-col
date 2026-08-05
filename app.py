@@ -6,6 +6,8 @@ No local files required — works on Streamlit Community Cloud.
 
 import io
 import sys
+import traceback
+from contextlib import contextmanager
 from datetime import date
 from itertools import combinations as _combinations
 from pathlib import Path
@@ -526,8 +528,24 @@ tab_daily, tab_hist, tab_yield, tab_pension, tab_cross = st.tabs(
      "🏦 Fondos de Pensiones", "🔀 Triangulación"]
 )
 
+
+@contextmanager
+def _safe_tab(tab):
+    """
+    Enter a tab and catch any exception so a bug in one tab doesn't crash
+    the whole app. Shows the traceback inline instead of the generic
+    Streamlit "Oh no" error page.
+    """
+    with tab:
+        try:
+            yield
+        except Exception as _exc:
+            st.error(f"⚠️ Ocurrió un error en esta sección: **{type(_exc).__name__}**")
+            st.code(traceback.format_exc(), language="python")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-with tab_daily:
+with _safe_tab(tab_daily):
 
     # ── Bond detail ──────────────────────────────────────────────────────────
     st.subheader("Bonos BGLT")
@@ -598,7 +616,7 @@ with tab_daily:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-with tab_hist:
+with _safe_tab(tab_hist):
     st.subheader("Posiciones Netas por Sector — Bonos Ext. USD")
     st.caption(
         "Positivo = comprador neto · Negativo = vendedor neto · "
@@ -772,7 +790,7 @@ with tab_hist:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-with tab_yield:
+with _safe_tab(tab_yield):
     st.subheader("Curva de Tasas — Bonos BGLT")
     st.caption(
         "Análisis de tasas de cierre (% e.a.) de los bonos de Deuda Pública Externa USD. "
@@ -925,7 +943,7 @@ with tab_yield:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-with tab_pension:
+with _safe_tab(tab_pension):
     st.subheader("🏦 Tenencias BGLT — Fondos de Pensiones Obligatorias")
     st.info(
         "**¿Qué muestra esta pestaña?**  \n"
@@ -1220,7 +1238,7 @@ def _triangulate_with_bonds(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-with tab_cross:
+with _safe_tab(tab_cross):
     st.subheader("🔀 Triangulación — Cruces Probables entre Participantes")
     st.info(
         "**¿Qué es la triangulación?**  \n"
