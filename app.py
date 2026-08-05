@@ -231,7 +231,7 @@ def _build_yield_history_df(_files_key: tuple) -> pd.DataFrame:
     Only rows where the bond actually traded (cv_tasa_cierre not null/zero).
     """
     records = []
-    for date_str, path in sorted(history_files.items()):
+    for date_str, path in _files_key:
         try:
             wb      = openpyxl.load_workbook(path, read_only=True, data_only=True)
             ms_rows = list(wb["RF-Mercado Secundario"].iter_rows(values_only=True))
@@ -385,7 +385,7 @@ def _build_history_df(_files_key: tuple) -> pd.DataFrame:
     Cache key includes file paths so new files bust the cache automatically.
     """
     records = []
-    for date_str, path in sorted(history_files.items()):
+    for date_str, path in _files_key:
         try:
             wb       = openpyxl.load_workbook(path, read_only=True, data_only=True)
             pti_rows = list(wb["RF-PorTipoInver"].iter_rows(values_only=True))
