@@ -1239,7 +1239,7 @@ with tab_cross:
                 "Bono(s)":       bond_str,
                 "Vencimiento(s)":vto_str,
                 "Monto (M COP)": f"{c['monto']:,.0f}",
-                "# Opes":        c["num_opes"] if c["num_opes"] > 0 else "—",
+                "# Opes":        str(c["num_opes"]) if c["num_opes"] > 0 else "—",
                 "Confianza":     conf_str,
             })
 
@@ -1249,6 +1249,7 @@ with tab_cross:
             hide_index=True,
             column_config={
                 "Monto (M COP)": st.column_config.TextColumn("Monto (M COP)"),
+                "# Opes":        st.column_config.TextColumn("# Opes"),
                 "Confianza":     st.column_config.TextColumn("Confianza"),
             },
         )
@@ -1431,12 +1432,15 @@ with tab_cross:
             .reset_index(drop=True)
         )
         consistency.index += 1
+        # Pre-format numeric columns as strings to avoid Arrow mixed-type issues
+        consistency["Flujo Prom (M COP)"]  = consistency["Flujo Prom (M COP)"].apply(lambda x: f"{x:,.0f}")
+        consistency["Flujo Total (M COP)"] = consistency["Flujo Total (M COP)"].apply(lambda x: f"{x:,.0f}")
         st.dataframe(
             consistency,
             use_container_width=True,
             hide_index=False,
             column_config={
-                "Flujo Prom (M COP)":  st.column_config.NumberColumn(format=",.0f"),
-                "Flujo Total (M COP)": st.column_config.NumberColumn(format=",.0f"),
+                "Flujo Prom (M COP)":  st.column_config.TextColumn("Flujo Prom (M COP)"),
+                "Flujo Total (M COP)": st.column_config.TextColumn("Flujo Total (M COP)"),
             },
         )
