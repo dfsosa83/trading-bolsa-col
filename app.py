@@ -164,7 +164,7 @@ def _parse(xlsx_bytes: bytes, report_date: str):
     df_bonds["total_monto"] = df_bonds["cv_monto"].fillna(0) + df_bonds["sim_monto"].fillna(0)
 
     bond_display = df_bonds[[
-        "nemotecnico", "cv_monto", "fec_vcto",
+        "nemotecnico", "cv_monto", "total_monto", "fec_vcto",
         "cv_num_opes",
         "cv_tasa_min", "cv_tasa_max", "cv_tasa_cierre",
     ]].rename(columns={
@@ -175,6 +175,7 @@ def _parse(xlsx_bytes: bytes, report_date: str):
         "cv_tasa_min":    "Tasa Mín",
         "cv_tasa_max":    "Tasa Máx",
         "cv_tasa_cierre": "Tasa Cierre",
+        "total_monto":    "_monto_raw",  # hidden; used by triangulation (CV + SIM)
     }).reset_index(drop=True)
     bond_display["CV Monto"] = bond_display["CV Monto"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
 
@@ -559,7 +560,7 @@ def _main():
         )
 
         # Add USD equivalent column using current TRM
-        bond_display = bond_df.copy()
+        bond_display = bond_df.drop(columns=["_monto_raw"], errors="ignore").copy()
         cop_numeric  = bond_display["CV Monto"].str.replace(",", "", regex=False).apply(pd.to_numeric, errors="coerce")
         usd_col_pos  = bond_display.columns.get_loc("CV Monto") + 1
         bond_display.insert(usd_col_pos, "Monto USD (M)",
@@ -1170,7 +1171,9 @@ def _main():
         for _, row in bond_df.iterrows():
             nemo = str(row["Nemotécnico"])
             try:
-                monto = float(str(row["CV Monto"]).replace(",", ""))
+                _raw = row.get("_monto_raw")
+                monto = (float(_raw) if (pd.notna(_raw) and float(_raw) > 0)
+                         else float(str(row["CV Monto"]).replace(",", "")))
             except (ValueError, TypeError):
                 continue
             if monto > 0:
@@ -1263,7 +1266,9 @@ def _main():
         for _, row in bond_df.iterrows():
             nemo = str(row["Nemotécnico"])
             try:
-                monto = float(str(row["CV Monto"]).replace(",", ""))
+                _raw = row.get("_monto_raw")
+                monto = (float(_raw) if (pd.notna(_raw) and float(_raw) > 0)
+                         else float(str(row["CV Monto"]).replace(",", "")))
             except (ValueError, TypeError):
                 continue
             if monto > 0:
@@ -1419,10 +1424,21 @@ def _main():
         )
         complete = _find_complete_attribution(bond_df, buyers_df, sellers_df)
         if not complete:
+            # Show diagnostic: how much the totals differ
+            _bond_total = sum(
+                float(r.get("_monto_raw") or 0) or
+                (float(str(r["CV Monto"]).replace(",", "")) if pd.notna(r.get("CV Monto")) else 0)
+                for _, r in bond_df.iterrows()
+            )
+            _buy_total  = float(buyers_df["Monto Comprado"].sum())
+            _sell_total = float(sellers_df["Monto Vendido"].sum())
+            _diff = _buy_total - _bond_total
             st.warning(
-                "No se encontró una atribución completa que satisfaga los totales sectoriales. "
-                "Posibles causas: 'Simultáneas' que inflan los totales, o bonos con montos "
-                "que no cuadran exactamente con los sectores activos.",
+                f"No se encontró una atribución completa.  \n"
+                f"**Bonos (CV+SIM):** {_bond_total:,.0f} M COP · "
+                f"**Compras sectoriales:** {_buy_total:,.0f} M COP · "
+                f"**Diferencia:** {_diff:+,.0f} M COP  \n"
+                f"{'Probable causa: Simultáneas en los totales sectoriales no reflejadas en los bonos CV.' if _diff > 100 else 'Los totales cuadran — puede haber múltiples soluciones no encontradas aún.'}",
                 icon="⚠️",
             )
         else:
